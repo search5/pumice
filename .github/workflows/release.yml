@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          # arduino/setup-protoc versions track the protobuf release tag (e.g. "21.12"),
+          # which reports itself as protoc 3.21.12 (the version this project is verified with).
+          version: "21.12"
+
+      - name: Check tag matches manifest.json version
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$TAG" != "$MANIFEST_VERSION" ]; then
+            echo "Tag ($TAG) does not match manifest.json version ($MANIFEST_VERSION)."
+            exit 1
+          fi
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF#refs/tags/}" \
+            main.js manifest.json styles.css \
+            --title "${GITHUB_REF#refs/tags/}" \
+            --generate-notes

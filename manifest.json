@@ -1,0 +1,10 @@
+{
+  "id": "pumice",
+  "name": "Pumice",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
+  "author": "mzc01-search5",
+  "authorUrl": "https://github.com/search5",
+  "isDesktopOnly": false
+}

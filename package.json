@@ -1,0 +1,32 @@
+{
+  "name": "pumice",
+  "version": "0.1.0",
+  "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
+  "main": "main.js",
+  "scripts": {
+    "postinstall": "node scripts/fetch-protoc-gen-grpc-web.mjs",
+    "predev": "node scripts/ensure-generated.mjs",
+    "dev": "node esbuild.config.mjs",
+    "prebuild": "node scripts/ensure-generated.mjs",
+    "build": "node esbuild.config.mjs production",
+    "prelint": "node scripts/ensure-generated.mjs",
+    "lint": "tsc --noEmit",
+    "proto:gen": "node scripts/gen-proto.mjs",
+    "version": "node scripts/version-bump.mjs && git add manifest.json versions.json"
+  },
+  "dependencies": {
+    "@improbable-eng/grpc-web": "^0.15.0",
+    "diff": "^9.0.0",
+    "google-protobuf": "^3.21.2",
+    "grpc-web": "^2.0.2"
+  },
+  "devDependencies": {
+    "@types/google-protobuf": "^3.15.12",
+    "@types/node": "^20.0.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.0",
+    "obsidian": "latest",
+    "protoc-gen-js": "^3.21.4-4",
+    "typescript": "^5.0.0"
+  }
+}

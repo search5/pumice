@@ -1,0 +1,159 @@
+syntax = "proto3";
+
+package obsidian.sync.v1;
+
+// ─── Common ───────────────────────────────────────────────────────────────────
+
+message Empty {}
+
+message Pong {
+  string server_version = 1;
+  int64  timestamp_ms   = 2;
+}
+
+// ─── File Metadata ────────────────────────────────────────────────────────────
+
+message FileMeta {
+  string path            = 1;  // path relative to the vault root
+  int64  modified_at_ms  = 2;  // Unix ms
+  int64  size_bytes      = 3;
+  string content_hash    = 4;  // SHA-256 hex
+  bool   is_deleted      = 5;
+}
+
+// ─── Delta (metadata comparison) ──────────────────────────────────────────────
+//
+// Flow:
+//   1. Client sends its local FileMeta list
+//   2. Server responds with a Delta: the upload-needed list + notice to start the download stream
+//   The client then calls UploadFiles and DownloadFiles concurrently
+
+message DeltaRequest {
+  string            vault_id     = 1;
+  repeated FileMeta local_files  = 2;
+}
+
+message DeltaResponse {
+  repeated string   need_upload   = 1;  // Client is newer than the server → needs to be uploaded
+  repeated FileMeta need_download = 2;  // Server is newer → needs to be downloaded
+  repeated Conflict conflicts     = 3;
+}
+
+message Conflict {
+  FileMeta server_version = 1;
+  FileMeta client_version = 2;
+}
+
+// ─── Chunked Upload (client → server streaming) ───────────────────────────────
+//
+// Sends N files in a single RPC call.
+// Each file is made up of chunks in the order [Header, Data..., EOF].
+
+message FileChunk {
+  oneof payload {
+    ChunkHeader header = 1;  // Announces the start of a file
+    ChunkData   data   = 2;  // The actual bytes
+    ChunkEOF    eof    = 3;  // Marks the end of a file
+  }
+}
+
+message ChunkHeader {
+  string vault_id       = 1;
+  string path           = 2;
+  int64  total_bytes    = 3;
+  int64  modified_at_ms = 4;
+}
+
+message ChunkData {
+  string path           = 1;  // Which file this chunk belongs to
+  uint32 sequence       = 2;  // For order verification
+  bytes  data           = 3;  // 256 KB max is recommended
+}
+
+message ChunkEOF {
+  string path         = 1;
+  string content_hash = 2;  // Verified for integrity after the server receives it
+}
+
+message UploadAck {
+  string path    = 1;
+  bool   ok      = 2;
+  string error   = 3;  // set when ok=false
+}
+
+message UploadBatch {
+  repeated FileChunk chunks = 1;
+}
+
+message DownloadBatchRequest {
+  string vault_id = 1;
+  repeated string paths = 2;
+}
+
+// ─── Service ──────────────────────────────────────────────────────────────────
+//
+// Bookmarks are included in regular file sync as .obsidian/bookmarks.json.
+// No separate RPC is needed for them.
+//
+// For gRPC-Web compatibility, bidirectional streaming was dropped in favor of batch-request-based
+// server streaming.
+
+service SyncService {
+  // Check the connection
+  rpc Ping(Empty) returns (Pong);
+
+  // Step 1: compare metadata → determine the upload/download lists
+  rpc Delta(DeltaRequest) returns (DeltaResponse);
+
+  // Step 2-A: upload N files (single batch request → server-streamed ACKs)
+  rpc UploadFiles(UploadBatch) returns (stream UploadAck);
+
+  // Step 2-B: download N files (single batch request → server-streamed FileChunks)
+  rpc DownloadFiles(DownloadBatchRequest) returns (stream FileChunk);
+
+  // Step 3: look up a file's backup version history
+  rpc GetFileHistory(HistoryRequest) returns (HistoryResponse);
+
+  // Step 4: download a specific version of a file
+  rpc DownloadHistoryVersion(HistoryVersionDownloadRequest) returns (stream FileChunk);
+
+  // Step 5: restore a server-side file to a specific version (overwrite)
+  rpc RestoreHistoryVersion(RestoreHistoryRequest) returns (RestoreHistoryResponse);
+}
+
+// ─── Version History ──────────────────────────────────────────────────────────
+
+message HistoryRequest {
+  string vault_id = 1;
+  string path     = 2;
+}
+
+message HistoryVersion {
+  int64  history_id     = 1;
+  int64  modified_at_ms = 2;
+  int64  size_bytes     = 3;
+  string content_hash   = 4;
+  string device_name    = 5;
+  string user_name      = 6;
+}
+
+message HistoryResponse {
+  repeated HistoryVersion versions = 1;
+}
+
+message HistoryVersionDownloadRequest {
+  string vault_id   = 1;
+  string path       = 2;
+  int64  history_id = 3;
+}
+
+message RestoreHistoryRequest {
+  string vault_id   = 1;
+  string path       = 2;
+  int64  history_id = 3;
+}
+
+message RestoreHistoryResponse {
+  bool   ok    = 1;
+  string error = 2;
+}
