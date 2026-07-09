@@ -304,6 +304,7 @@ export class SyncClient {
     // 1. Scan local file metadata
     const allFiles = this.vault.getFiles();
     const localFilesMeta: any[] = [];
+    const hashCacheEntries: Array<{ file: TFile; hash: string }> = [];
 
     for (const file of allFiles) {
       if (this.isIgnored(file.path)) {
@@ -323,14 +324,17 @@ export class SyncClient {
       // Seeds the same cache Publish's diff scan reads from — regular sync already reads and hashes
       // every file, so by the time Publish checks anything it's very likely already cached. `hash`
       // above is only the plaintext hash when E2EE is off; hash it again when E2EE is on (cheap, no
-      // extra I/O — the plaintext bytes are already in memory).
+      // extra I/O — the plaintext bytes are already in memory). Collected and written in one batch
+      // below rather than per file — a separate IndexedDB transaction per file noticeably slows this
+      // loop down once there are hundreds/thousands of files.
       if (this.hashCache) {
         const plainHash = this.settings.enableE2EE && this.settings.e2eePassword
           ? await sha256(arrayBuffer)
           : hash;
-        this.hashCache.set(file, plainHash);
+        hashCacheEntries.push({ file, hash: plainHash });
       }
     }
+    this.hashCache?.setMany(hashCacheEntries);
 
     // Explicitly include the bookmarks file in sync — .obsidian/bookmarks.json is a config file
     // outside the vault index, so it's never picked up as a TFile. The Vault API has no way to
