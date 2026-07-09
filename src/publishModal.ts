@@ -35,6 +35,26 @@ function isUnderFolder(path: string, folders: string[]): boolean {
   return folders.some(f => f && (path === f || path.startsWith(f + "/")));
 }
 
+// Runs `fn` over `items` with at most `limit` in flight at once, preserving result order (result[i]
+// corresponds to items[i] regardless of completion order). Reading+hashing every file one at a time
+// is fine on desktop's native fs, but on mobile each vault read crosses the Capacitor bridge, so
+// doing them serially turns an O(files) round-trip cost into a very visible delay — this lets those
+// round-trips overlap instead.
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+const HASH_CONCURRENCY = 8;
+
 // ─── Delta computation ──────────────────────────────────────────────────────
 // Same rule as core Publish: "excluded folders" take priority over "included folders". If an
 // individual file has a publish frontmatter value, that overrides the folder settings (an explicit
@@ -59,6 +79,19 @@ async function scanForChanges(
     return isUnderFolder(path, includeFolders);
   };
 
+  // Files that exist on both sides need their content hashed to tell whether they've changed — the
+  // expensive I/O part — so that's collected here first and run concurrently below, separately from
+  // the cheap synchronous classification (excluded/deleted) done in this pass.
+  interface Candidate {
+    path: string;
+    serverHash: string;
+    localFile: TFile;
+    publishFlag: boolean | null;
+    eligible: boolean;
+    isFocused: boolean;
+  }
+  const candidates: Candidate[] = [];
+
   for (const [serverPath, serverHash] of serverMap) {
     processedPaths.add(serverPath);
     if (isUnderFolder(serverPath, excludeFolders)) continue;
@@ -72,25 +105,37 @@ async function scanForChanges(
     }
 
     const publishFlag = getPublishFlag(app, localFile);
-    const eligible = isEligible(serverPath, publishFlag);
-    const isFocused = focusFile?.path === serverPath;
-    const data = await app.vault.readBinary(localFile);
+    candidates.push({
+      path: serverPath,
+      serverHash,
+      localFile,
+      publishFlag,
+      eligible: isEligible(serverPath, publishFlag),
+      isFocused: focusFile?.path === serverPath,
+    });
+  }
+
+  const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem | null> => {
+    const data = await app.vault.readBinary(c.localFile);
     const localHash = await computeHash(data);
 
-    if (localHash !== serverHash) {
-      if (eligible || isFocused) {
-        diffs.push({ path: serverPath, serverHash, type: "changed", checked: true });
-      } else {
-        diffs.push({ path: serverPath, serverHash, type: "to-delete", checked: true });
-      }
-    } else {
-      if (publishFlag === false && !isFocused) {
-        diffs.push({ path: serverPath, serverHash, type: "to-delete", checked: true });
-      } else if (eligible || isFocused) {
-        diffs.push({ path: serverPath, serverHash, type: "unchanged", checked: false });
-      }
+    if (localHash !== c.serverHash) {
+      return {
+        path: c.path,
+        serverHash: c.serverHash,
+        type: c.eligible || c.isFocused ? "changed" : "to-delete",
+        checked: true,
+      };
     }
-  }
+    if (c.publishFlag === false && !c.isFocused) {
+      return { path: c.path, serverHash: c.serverHash, type: "to-delete", checked: true };
+    }
+    if (c.eligible || c.isFocused) {
+      return { path: c.path, serverHash: c.serverHash, type: "unchanged", checked: false };
+    }
+    return null;
+  });
+  for (const d of candidateDiffs) if (d) diffs.push(d);
 
   for (const localFile of app.vault.getFiles()) {
     if (processedPaths.has(localFile.path)) continue;
