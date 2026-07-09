@@ -75,4 +75,22 @@ export class ContentHashCache {
   set(file: TFile, hash: string): void {
     this.put(file.path, { mtime: file.stat.mtime, size: file.stat.size, hash });
   }
+
+  /**
+   * Batched form of set() — regular sync seeds this cache for every local file on every sync pass,
+   * and opening a separate IndexedDB transaction per file (as set() does) noticeably slows that
+   * loop down once there are hundreds/thousands of files. This does the whole batch in one
+   * transaction instead.
+   */
+  setMany(entries: Array<{ file: TFile; hash: string }>): void {
+    if (!this.db || entries.length === 0) return;
+    try {
+      const store = this.db.transaction("hashes", "readwrite").objectStore("hashes");
+      for (const { file, hash } of entries) {
+        store.put({ mtime: file.stat.mtime, size: file.stat.size, hash }, file.path);
+      }
+    } catch {
+      /* best-effort cache — a failed batch just means these files get re-hashed next time */
+    }
+  }
 }
