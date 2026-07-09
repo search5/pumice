@@ -762,9 +762,8 @@ export class SyncClient {
   }
 
   public getPublishHost(): string {
-    const host = `${this.settings.serverHost}:${this.settings.serverPort}`;
-    const isLocal = host.startsWith("127.0.0.1") || host.startsWith("localhost");
-    return isLocal ? `http://${host}` : `https://${host}`;
+    const protocol = this.settings.useTls ? "https" : "http";
+    return `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}`;
   }
 
   // The {username} in the publish site URL (/publish/{username}/{vault}/...) has to be the username
