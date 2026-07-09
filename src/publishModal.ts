@@ -1184,16 +1184,22 @@ export class PublishModal extends Modal {
     (this.loaderEl as any).show();
 
     let client: SyncClient | null = null;
-    const tClientStart = performance.now();
+    let msGetSyncClient = 0;
+    let msGetUsername = 0;
     try {
+      const tGetClient = performance.now();
       client = await this.plugin.getSyncClient();
+      msGetSyncClient = lap("getSyncClient", tGetClient);
+
+      const tUsername = performance.now();
       const realUsername = await client.getAuthenticatedUsername();
+      msGetUsername = lap("getAuthenticatedUsername", tUsername);
+
       if (realUsername) this.siteUrl = this.buildSiteUrl(realUsername);
     } catch {
       // If looking up the server's username fails (offline, etc.), just keep the local
       // settings-based guess built in the constructor.
     }
-    const msClient = lap("getSyncClient+getAuthenticatedUsername", tClientStart);
 
     this.reviewChangesSection  = new ReviewChangesSection(this);
     this.siteOptionsSection    = new SiteOptionsSection(this);
@@ -1227,7 +1233,7 @@ export class PublishModal extends Modal {
     this.openSection(this.reviewChangesSection);
 
     const msTotal = lap("onOpen total", t0);
-    new Notice(`[diag] client:${msClient}ms scan:${msScan}ms total:${msTotal}ms`);
+    new Notice(`[diag] getSyncClient:${msGetSyncClient}ms getUsername:${msGetUsername}ms scan:${msScan}ms total:${msTotal}ms`);
   }
 
   openSection(section: ModalSection) {
