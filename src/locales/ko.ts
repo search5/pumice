@@ -34,6 +34,7 @@ export const ko: Record<string, string> = {
   "plugins.publish.label-clear-cache": "변경사항이 사이트에 반영되기까지 몇 분 정도 걸릴 수 있습니다. 최신 변경사항이 보이지 않으면 브라우저 캐시를 삭제해보세요.",
   "plugins.publish.label-file-selected": "개 선택됨",
   "plugins.publish.label-invite-pending": "대기 중",
+  "plugins.publish.msg-load-changes-failed": "변경사항 로드 실패: {{error}}",
   "plugins.publish.label-manage-excluded-folders": "제외된 폴더 관리",
   "plugins.publish.label-manage-included-folders": "포함된 폴더 관리",
   "plugins.publish.label-manage-passwords": "비밀번호 관리",

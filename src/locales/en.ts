@@ -33,6 +33,7 @@ export const en: Record<string, string> = {
     "It may take a few minutes for changes to appear on the site. If you don't see the latest changes, try clearing your browser cache.",
   "plugins.publish.label-file-selected": " selected",
   "plugins.publish.label-invite-pending": "Pending",
+  "plugins.publish.msg-load-changes-failed": "Failed to load changes: {{error}}",
   "plugins.publish.label-manage-excluded-folders": "Manage excluded folders",
   "plugins.publish.label-manage-included-folders": "Manage included folders",
   "plugins.publish.label-manage-passwords": "Manage passwords",
