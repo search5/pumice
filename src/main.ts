@@ -6,6 +6,7 @@ import { SyncClient } from "./syncClient";
 import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
+import { ContentHashCache } from "./contentHashCache";
 import { t } from "./i18n";
 
 // The "Vault Sync" ribbon button has no core equivalent, so there's no translation key for it —
@@ -71,6 +72,7 @@ export default class SyncPlugin extends Plugin {
   hasStoredToken = false;
   deletedFiles: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
+  contentHashCache!: ContentHashCache;
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private ribbonReplaceTimers: number[] = [];
@@ -89,6 +91,12 @@ export default class SyncPlugin extends Plugin {
       keepDays: this.settings.localSnapshotKeepDays,
     }));
     await this.snapshotStore.init();
+
+    // Lets the Publish diff scan skip re-hashing files whose content hasn't changed since the last
+    // scan (see contentHashCache.ts) — important once a vault has more than a few hundred files.
+    this.contentHashCache = new ContentHashCache();
+    await this.contentHashCache.init();
+
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof TFile) void this.snapshotStore.onFileChanged(file);
@@ -311,6 +319,7 @@ export default class SyncPlugin extends Plugin {
     for (const id of this.ribbonReplaceTimers) window.clearTimeout(id);
     this.ribbonReplaceTimers = [];
     this.snapshotStore?.close();
+    this.contentHashCache?.close();
   }
 
   async loadSettings(): Promise<void> {

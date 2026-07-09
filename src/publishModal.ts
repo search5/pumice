@@ -1,6 +1,7 @@
 import { AbstractInputSuggest, App, Modal, Notice, Setting, TFile, TFolder, normalizePath, setIcon } from "obsidian";
 import SyncPlugin from "./main";
 import { SyncClient } from "./syncClient";
+import { ContentHashCache } from "./contentHashCache";
 import { t } from "./i18n";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ async function scanForChanges(
   client: SyncClient,
   includeFolders: string[],
   excludeFolders: string[],
+  hashCache: ContentHashCache,
   focusFile?: TFile
 ): Promise<DiffItem[]> {
   const serverFiles = await client.listFiles();
@@ -116,8 +118,10 @@ async function scanForChanges(
   }
 
   const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem | null> => {
-    const data = await app.vault.readBinary(c.localFile);
-    const localHash = await computeHash(data);
+    const localHash = await hashCache.getHash(c.localFile, async () => {
+      const data = await app.vault.readBinary(c.localFile);
+      return computeHash(data);
+    });
 
     if (localHash !== c.serverHash) {
       return {
@@ -1179,10 +1183,16 @@ export class PublishModal extends Modal {
         .split("\n").map(p => p.trim()).filter(Boolean);
       const excludeFolders = this.plugin.settings.publishExcludeFolders
         .split("\n").map(p => p.trim()).filter(Boolean);
-      const diffs = await scanForChanges(this.app, client, includeFolders, excludeFolders, this.focusFile);
+      const diffs = await scanForChanges(
+        this.app, client, includeFolders, excludeFolders, this.plugin.contentHashCache, this.focusFile
+      );
       this.reviewChangesSection.setDiffs(diffs, this.focusFile);
     } catch (e: any) {
-      this.showError(`변경사항 로드 실패: ${e?.message ?? String(e)}`);
+      this.showError(
+        t("plugins.publish.msg-load-changes-failed", "Failed to load changes: {{error}}", {
+          error: e?.message ?? String(e),
+        })
+      );
     }
 
     (this.loaderEl as any).hide();
