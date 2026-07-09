@@ -826,27 +826,6 @@ export class SyncClient {
     return res.files || [];
   }
 
-  /**
-   * Single-file counterpart of listFiles() — used for "Publish current file" so checking one
-   * file's status doesn't require downloading every published file's path+hash first. Returns
-   * null if the file has never been published.
-   */
-  public async getFileStatus(filePath: string): Promise<{ hash: string } | null> {
-    const vaultId = this.vault.getName();
-    const protocol = this.settings.useTls ? "https" : "http";
-    const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/file?path=${encodeURIComponent(filePath)}`;
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "Authorization": `Bearer ${this.token}`,
-        "obs-id": vaultId,
-      },
-    });
-    if (!response.ok) return null;
-    const res = await response.json();
-    return res.hash ? { hash: res.hash } : null;
-  }
-
   // apiPostBackend convention: body automatically includes {id, token}
   private async postToBackend(endpoint: string, body: object): Promise<any> {
     const siteId = this.vault.getName();

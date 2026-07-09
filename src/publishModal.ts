@@ -154,27 +154,12 @@ async function scanForChanges(
   return diffs;
 }
 
-// "Publish current file" only needs one file's status, so unlike scanForChanges it never fetches
-// the server's full file list or walks the vault — a single targeted request (client.getFileStatus)
-// and a single local hash check, regardless of how many files exist elsewhere.
-async function scanSingleFile(
-  app: App,
-  client: SyncClient,
-  hashCache: ContentHashCache,
-  focusFile: TFile
-): Promise<DiffItem[]> {
-  const [serverStatus, localHash] = await Promise.all([
-    client.getFileStatus(focusFile.path),
-    hashCache.getHash(focusFile, async () => computeHash(await app.vault.readBinary(focusFile))),
-  ]);
-
-  if (!serverStatus) {
-    return [{ path: focusFile.path, serverHash: "", type: "new", checked: true }];
-  }
-  if (localHash === serverStatus.hash) {
-    return [{ path: focusFile.path, serverHash: serverStatus.hash, type: "unchanged", checked: false }];
-  }
-  return [{ path: focusFile.path, serverHash: serverStatus.hash, type: "changed", checked: true }];
+// "Publish current file" is an explicit single-file action — the user already decided to publish
+// it, so there's no need to fetch the server's whole file list (or walk the vault, like
+// scanForChanges does) just to pre-classify it as new/changed/unchanged first. It's always shown as
+// ready to publish; if it happens to already match what's on the server, re-uploading it is harmless.
+function scanSingleFile(focusFile: TFile): DiffItem[] {
+  return [{ path: focusFile.path, serverHash: "", type: "changed", checked: true }];
 }
 
 // ─── Section base ────────────────────────────────────────────────────────────
@@ -1201,16 +1186,13 @@ export class PublishModal extends Modal {
     this.uploadProgressSection = new UploadProgressSection(this);
 
     try {
-      if (!client) client = await this.plugin.getSyncClient();
-      // "Publish current file" (this.focusFile set, opened from the file context menu) only needs
-      // that one file's status — scanning the whole vault's diff against the server's whole file
-      // list for a single-file action doesn't scale as the vault grows. The general "Publish
-      // changes" entry point (no focus file) still needs the full scan, since it's reviewing
-      // everything by design.
+      // "Publish current file" (this.focusFile set, opened from the file context menu) is a single
+      // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
+      // walk the way the general "Publish changes" entry point (no focus file) does.
       const diffs = this.focusFile
-        ? await scanSingleFile(this.app, client, this.plugin.contentHashCache, this.focusFile)
+        ? scanSingleFile(this.focusFile)
         : await scanForChanges(
-            this.app, client,
+            this.app, client ?? (client = await this.plugin.getSyncClient()),
             this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
             this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
             this.plugin.contentHashCache
