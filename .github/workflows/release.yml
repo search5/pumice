@@ -12,12 +12,13 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 20
 
+      # Still on Node 20 upstream as of v3.0.0; bump once arduino/setup-protoc ships a Node 24 build.
       - uses: arduino/setup-protoc@v3
         with:
           # arduino/setup-protoc versions track the protobuf release tag (e.g. "21.12"),
