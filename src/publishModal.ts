@@ -1094,7 +1094,11 @@ class UploadProgressSection extends ModalSection {
           await client.unpublishFile(diff.path);
           info.flairEl.setText(t("plugins.publish.label-status-deleted", "Deleted"));
         } else {
-          await client.publishFile(diff.path);
+          const hash = await client.publishFile(diff.path);
+          // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
+          // value so the next Publish scan doesn't re-read and re-hash this same content.
+          const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
+          if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
           info.flairEl.setText(t("plugins.publish.label-status-published", "Published"));
         }
       } catch (e: any) {

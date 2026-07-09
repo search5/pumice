@@ -66,4 +66,13 @@ export class ContentHashCache {
     this.put(file.path, { mtime: file.stat.mtime, size: file.stat.size, hash });
     return hash;
   }
+
+  /**
+   * Records an already-known hash directly, for callers that computed it as an unavoidable side
+   * effect of something else (e.g. hashing a file to upload it) rather than asking this cache for
+   * it — avoids a redundant re-hash the next time this file's status is checked.
+   */
+  set(file: TFile, hash: string): void {
+    this.put(file.path, { mtime: file.stat.mtime, size: file.stat.size, hash });
+  }
 }
