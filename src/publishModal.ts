@@ -1162,6 +1162,15 @@ export class PublishModal extends Modal {
   }
 
   async onOpen() {
+    // TEMPORARY diagnostic timing — remove once the mobile slowness report is root-caused. Shows
+    // each phase's duration in a Notice so it's visible without remote-debugging the WebView.
+    const t0 = performance.now();
+    const lap = (label: string, from: number) => {
+      const ms = Math.round(performance.now() - from);
+      console.log(`[pumice diag] ${label}: ${ms}ms`);
+      return ms;
+    };
+
     const { contentEl } = this;
     contentEl.empty();
     this.titleEl.setText(t("plugins.publish.action-publish-changes", "Publish changes"));
@@ -1175,6 +1184,7 @@ export class PublishModal extends Modal {
     (this.loaderEl as any).show();
 
     let client: SyncClient | null = null;
+    const tClientStart = performance.now();
     try {
       client = await this.plugin.getSyncClient();
       const realUsername = await client.getAuthenticatedUsername();
@@ -1183,12 +1193,14 @@ export class PublishModal extends Modal {
       // If looking up the server's username fails (offline, etc.), just keep the local
       // settings-based guess built in the constructor.
     }
+    const msClient = lap("getSyncClient+getAuthenticatedUsername", tClientStart);
 
     this.reviewChangesSection  = new ReviewChangesSection(this);
     this.siteOptionsSection    = new SiteOptionsSection(this);
     this.siteFiltersSection    = new SiteFiltersSection(this);
     this.uploadProgressSection = new UploadProgressSection(this);
 
+    const tScanStart = performance.now();
     try {
       // "Publish current file" (this.focusFile set, opened from the file context menu) is a single
       // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
@@ -1209,9 +1221,13 @@ export class PublishModal extends Modal {
         })
       );
     }
+    const msScan = lap(this.focusFile ? "scanSingleFile" : "scanForChanges", tScanStart);
 
     (this.loaderEl as any).hide();
     this.openSection(this.reviewChangesSection);
+
+    const msTotal = lap("onOpen total", t0);
+    new Notice(`[diag] client:${msClient}ms scan:${msScan}ms total:${msTotal}ms`);
   }
 
   openSection(section: ModalSection) {
