@@ -528,6 +528,19 @@
   overflow-x: hidden;
 }
 
+/* Reused core Publish's own class names (mod-publish, mod-lg, mod-scrollable-content) so desktop's
+   sizing/scrolling comes from core's stylesheet for free — but mobile's core CSS doesn't define
+   layout for that class combination the same way, so .modal-content is left with no defined height
+   and collapses to nothing visible. Give it the same explicit flex sizing our other modal
+   (syncHistoryModal's mobile layout) already needed for the same reason. */
+.is-mobile .grpc-publish-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 50vh;
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
 .grpc-publish-modal .message-container,
 .grpc-publish-modal .publish-sections-container,
 .grpc-publish-modal .publish-no-changes,
