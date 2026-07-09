@@ -306,7 +306,8 @@ export default class SyncPlugin extends Plugin {
       async (deleted) => {
         this.deletedFiles = deleted;
         await this.savePluginData();
-      }
+      },
+      this.contentHashCache
     );
   }
 
@@ -361,7 +362,8 @@ export default class SyncPlugin extends Plugin {
       async (deleted) => {
         this.deletedFiles = deleted;
         await this.savePluginData();
-      }
+      },
+      this.contentHashCache
     );
     await client.testConnection();
   }
@@ -386,7 +388,8 @@ export default class SyncPlugin extends Plugin {
         async (deleted) => {
           this.deletedFiles = deleted;
           await this.savePluginData();
-        }
+        },
+        this.contentHashCache
       );
 
       const result = await client.sync();

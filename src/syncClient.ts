@@ -2,6 +2,7 @@ import { SyncServiceClient } from "./generated/SyncServiceClientPb";
 import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
 import { CapacitorAdapter, DataAdapter, FileSystemAdapter, TFile, Vault, Notice } from "obsidian";
+import { ContentHashCache } from "./contentHashCache";
 
 // DataAdapter's public interface has no getFullPath — it only exists on the concrete desktop
 // (FileSystemAdapter) and mobile (CapacitorAdapter) implementations (both @public), so we narrow
@@ -125,6 +126,7 @@ export class SyncClient {
   private settings: any;
   private deletedFiles: Record<string, number>;
   private updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>;
+  private hashCache?: ContentHashCache;
   private e2eeKeyCache: CryptoKey | null = null;
 
   private async getE2eeKey(): Promise<CryptoKey> {
@@ -232,7 +234,8 @@ export class SyncClient {
     token: string,
     settings: any,
     deletedFiles: Record<string, number>,
-    updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>
+    updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>,
+    hashCache?: ContentHashCache
   ) {
     this.vault = vault;
     this.pluginDir = pluginDir;
@@ -240,6 +243,7 @@ export class SyncClient {
     this.settings = settings;
     this.deletedFiles = deletedFiles;
     this.updateDeletedFiles = updateDeletedFiles;
+    this.hashCache = hashCache;
 
     const protocol = settings.useTls ? "https" : "http";
     const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
@@ -315,6 +319,17 @@ export class SyncClient {
         content_hash: hash,
         is_deleted: false,
       });
+
+      // Seeds the same cache Publish's diff scan reads from — regular sync already reads and hashes
+      // every file, so by the time Publish checks anything it's very likely already cached. `hash`
+      // above is only the plaintext hash when E2EE is off; hash it again when E2EE is on (cheap, no
+      // extra I/O — the plaintext bytes are already in memory).
+      if (this.hashCache) {
+        const plainHash = this.settings.enableE2EE && this.settings.e2eePassword
+          ? await sha256(arrayBuffer)
+          : hash;
+        this.hashCache.set(file, plainHash);
+      }
     }
 
     // Explicitly include the bookmarks file in sync — .obsidian/bookmarks.json is a config file
@@ -571,9 +586,15 @@ export class SyncClient {
               }
 
               let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
+              // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
+              // as-is for the cache when E2EE is off, since it's then already the plaintext hash
+              // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
+              // the buffer's already in memory).
+              let plainHashForCache = calculatedHash;
               if (this.settings.enableE2EE && this.settings.e2eePassword) {
                 const key = await this.getE2eeKey();
                 plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
+                plainHashForCache = await sha256(plainData);
               }
 
               await writeBinaryByPath(this.vault, currentPath, plainData);
@@ -585,6 +606,13 @@ export class SyncClient {
                 } catch (err) {
                   console.warn("Failed to set file times via fs.utimesSync:", err);
                 }
+              }
+
+              // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
+              // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
+              if (this.hashCache) {
+                const written = this.vault.getAbstractFileByPath(currentPath);
+                if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
               }
 
               downloadCount++;
