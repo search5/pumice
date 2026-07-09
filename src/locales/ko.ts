@@ -89,6 +89,9 @@ export const ko: Record<string, string> = {
   "plugins.sync.option-currently-excluded-folders": " 현재 제외된 폴더:",
   "setting.hotkeys.prompt-filter": "파일 검색...",
 
+  "settings.note-vault-name-identifies-vault":
+    "이 vault는 폴더 이름(\"{{vaultName}}\")으로 서버에 식별됩니다 — 같은 vault를 동기화하는 모든 기기는 폴더 이름이 정확히 같아야 합니다.",
+
   "settings.heading-sync-target": "동기화 대상",
   "settings.heading-auto-sync": "자동 동기화",
   "settings.heading-conflict-resolution": "충돌 해결",

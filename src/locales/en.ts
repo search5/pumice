@@ -91,6 +91,9 @@ export const en: Record<string, string> = {
   "plugins.sync.option-currently-excluded-folders": " Currently excluded folders:",
   "setting.hotkeys.prompt-filter": "Search files...",
 
+  "settings.note-vault-name-identifies-vault":
+    "This vault is identified to the server by its folder name (\"{{vaultName}}\") — every device syncing this same vault must use a folder with the exact same name.",
+
   "settings.heading-sync-target": "Sync target",
   "settings.heading-auto-sync": "Auto sync",
   "settings.heading-conflict-resolution": "Conflict resolution",
