@@ -68,7 +68,12 @@ async function scanForChanges(
   hashCache: ContentHashCache,
   focusFile?: TFile
 ): Promise<DiffItem[]> {
+  // TEMPORARY diagnostic — remove once "full publish still slow" is root-caused.
+  const tList = performance.now();
   const serverFiles = await client.listFiles();
+  const msList = Math.round(performance.now() - tList);
+  console.log(`[pumice diag] listFiles: ${msList}ms, ${serverFiles.length} files`);
+  new Notice(`[diag] listFiles:${msList}ms (${serverFiles.length} files)`);
   const serverMap = new Map<string, string>();
   for (const f of serverFiles) serverMap.set(f.path, f.hash);
 
@@ -117,6 +122,7 @@ async function scanForChanges(
     });
   }
 
+  const tHash = performance.now();
   const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem | null> => {
     const localHash = await hashCache.getHash(c.localFile, async () => {
       const data = await app.vault.readBinary(c.localFile);
@@ -140,8 +146,13 @@ async function scanForChanges(
     return null;
   });
   for (const d of candidateDiffs) if (d) diffs.push(d);
+  const msHash = Math.round(performance.now() - tHash);
+  console.log(`[pumice diag] hash ${candidates.length} candidates: ${msHash}ms`);
+  new Notice(`[diag] hash ${candidates.length} candidates:${msHash}ms`);
 
-  for (const localFile of app.vault.getFiles()) {
+  const tNew = performance.now();
+  const allLocalFiles = app.vault.getFiles();
+  for (const localFile of allLocalFiles) {
     if (processedPaths.has(localFile.path)) continue;
     if (isUnderFolder(localFile.path, excludeFolders)) continue;
     const isFocused = focusFile?.path === localFile.path;
@@ -150,6 +161,9 @@ async function scanForChanges(
       diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: true });
     }
   }
+  const msNew = Math.round(performance.now() - tNew);
+  console.log(`[pumice diag] new-files scan over ${allLocalFiles.length} local files: ${msNew}ms, ${diffs.length} total diffs`);
+  new Notice(`[diag] new-files scan (${allLocalFiles.length} local):${msNew}ms, ${diffs.length} diffs total`);
 
   return diffs;
 }
@@ -1201,7 +1215,11 @@ export class PublishModal extends Modal {
             this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
             this.plugin.contentHashCache
           );
+      const tRender = performance.now();
       this.reviewChangesSection.setDiffs(diffs, this.focusFile);
+      const msRender = Math.round(performance.now() - tRender);
+      console.log(`[pumice diag] setDiffs render (${diffs.length} diffs): ${msRender}ms`);
+      new Notice(`[diag] render:${msRender}ms for ${diffs.length} diffs`);
     } catch (e: any) {
       this.showError(
         t("plugins.publish.msg-load-changes-failed", "Failed to load changes: {{error}}", {
