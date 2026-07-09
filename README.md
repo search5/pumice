@@ -140,6 +140,12 @@ Default exclude patterns (`ignorePatterns` / `publishExcludeFolders`):
 .trash
 ```
 
+> **The vault's folder name is its identity on the server.** There's no separate vault ID — the
+> vault's folder name is used as-is to key everything server-side (sync, publish, version history).
+> Every device syncing the same vault needs a folder with the exact same name; a mismatch isn't
+> rejected, it just syncs as an unrelated vault. The settings tab shows the current vault's name for
+> this reason.
+
 ## Project structure
 
 ```

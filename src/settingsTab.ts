@@ -30,6 +30,21 @@ export class SyncSettingTab extends PluginSettingTab {
     // Per Obsidian's guidelines: don't put a heading at the very top of a settings tab (the tab
     // itself already has a title) — only the first section skips one, later sections below use
     // setHeading() to separate them.
+
+    // The vault's folder name is used as-is as the server-side vault identifier everywhere (see
+    // syncClient.ts) — there's no separate vault ID setting, and the server doesn't warn on a
+    // mismatch, it just silently treats a differently-named folder as an unrelated vault. This is
+    // the one place that's surfaced to the user, so a typo or a renamed folder is caught here
+    // instead of showing up later as "why isn't this syncing with my other device."
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t(
+        "settings.note-vault-name-identifies-vault",
+        "This vault is identified to the server by its folder name (\"{{vaultName}}\") — every device syncing this same vault must use a folder with the exact same name.",
+        { vaultName: this.app.vault.getName() }
+      ),
+    });
+
     new Setting(containerEl)
       .setName(t("settings.option-user-name", "User name"))
       .setDesc(t("settings.option-user-name-desc", "Username shown in sync history"))
