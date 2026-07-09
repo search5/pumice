@@ -774,10 +774,21 @@ export class SyncClient {
   // the master admin token, this resolves to the ADMIN_USER env var (or "admin" if unset).
   public async getAuthenticatedUsername(): Promise<string | null> {
     const url = `${this.getPublishHost()}/api/token/info`;
-    const response = await fetch(url, { headers: { "obs-token": this.token } });
-    if (!response.ok) return null;
-    const info = (await response.json()) as { username: string | null };
-    return info.username;
+    // This is only used to build a display link (the site URL's username segment) — a nice-to-have,
+    // not required for the modal to function (callers already fall back to the local settings-based
+    // guess on any failure). Without a timeout, a slow or unreachable network stalls the whole
+    // Publish modal for as long as the platform's own connection timeout (which can be tens of
+    // seconds), even though nothing else here depends on this call succeeding.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(url, { headers: { "obs-token": this.token }, signal: controller.signal });
+      if (!response.ok) return null;
+      const info = (await response.json()) as { username: string | null };
+      return info.username;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   /** Returns the hash it computed for the upload, so callers can seed a local hash cache with it
