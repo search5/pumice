@@ -1,7 +1,7 @@
 {
   "id": "pumice",
   "name": "Pumice",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "minAppVersion": "1.0.0",
   "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
   "author": "mzc01-search5",
