@@ -113,11 +113,11 @@ export const ko: Record<string, string> = {
   "settings.option-test-connection-desc": "서버에 ping을 보내 연결 상태를 확인합니다",
 
   "settings.option-auth-token": "인증 토큰",
-  "settings.desc-token-set": "토큰이 설정되어 있습니다 — {{keychain}}에 저장됨",
-  "settings.desc-token-not-set": "{{keychain}}에 저장됩니다",
+  "settings.desc-token-set": "토큰이 설정되어 있습니다 — Obsidian의 보안 저장소에 저장됨",
+  "settings.desc-token-not-set": "Obsidian의 보안 저장소에 저장됩니다",
   "settings.placeholder-token-change": "변경하려면 새 토큰 입력",
   "settings.placeholder-token-new": "서버에서 발급한 토큰 입력",
-  "settings.msg-token-saved": "토큰이 {{keychain}}에 저장됐습니다",
+  "settings.msg-token-saved": "토큰이 저장됐습니다",
   "settings.msg-token-deleted": "토큰이 삭제됐습니다",
 
   "settings.option-sync-files": "파일 동기화",

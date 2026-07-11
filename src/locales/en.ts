@@ -115,11 +115,11 @@ export const en: Record<string, string> = {
   "settings.option-test-connection-desc": "Pings the server to check the connection",
 
   "settings.option-auth-token": "Authentication token",
-  "settings.desc-token-set": "A token is set — stored in {{keychain}}",
-  "settings.desc-token-not-set": "Will be stored in {{keychain}}",
+  "settings.desc-token-set": "A token is set — stored in Obsidian's secure storage",
+  "settings.desc-token-not-set": "Will be stored in Obsidian's secure storage",
   "settings.placeholder-token-change": "Enter a new token to change it",
   "settings.placeholder-token-new": "Enter the token issued by the server",
-  "settings.msg-token-saved": "Token saved to {{keychain}}",
+  "settings.msg-token-saved": "Token saved",
   "settings.msg-token-deleted": "Token deleted",
 
   "settings.option-sync-files": "Sync files",
