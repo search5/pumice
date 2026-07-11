@@ -1,19 +1,8 @@
 import { SyncServiceClient } from "./generated/SyncServiceClientPb";
 import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
-import { CapacitorAdapter, DataAdapter, FileSystemAdapter, TFile, Vault, Notice } from "obsidian";
+import { TFile, Vault, Notice } from "obsidian";
 import { ContentHashCache } from "./contentHashCache";
-
-// DataAdapter's public interface has no getFullPath — it only exists on the concrete desktop
-// (FileSystemAdapter) and mobile (CapacitorAdapter) implementations (both @public), so we narrow
-// via instanceof. This value is computed ahead of the fs.utimesSync call (desktop-only), so
-// restricting it to desktop only would break file download/restore on mobile with an exception.
-function getAdapterFullPath(adapter: DataAdapter, normalizedPath: string): string {
-  if (adapter instanceof FileSystemAdapter || adapter instanceof CapacitorAdapter) {
-    return adapter.getFullPath(normalizedPath);
-  }
-  throw new Error("지원되지 않는 플랫폼입니다.");
-}
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
@@ -37,16 +26,21 @@ async function statByPath(vault: Vault, path: string): Promise<{ mtime: number; 
   return vault.adapter.stat(path);
 }
 
-async function writeBinaryByPath(vault: Vault, path: string, data: ArrayBuffer): Promise<void> {
+// mtime is passed via Obsidian's own DataWriteOptions (public API, works identically on desktop and
+// mobile) rather than a raw fs call, so this is the only place a downloaded file's mtime ever gets
+// set -- and it happens atomically as part of the same write Obsidian already knows about, so
+// TFile.stat reflects it immediately afterward (no separate out-of-band step that could go stale).
+async function writeBinaryByPath(vault: Vault, path: string, data: ArrayBuffer, mtime?: number): Promise<void> {
+  const options = mtime !== undefined ? { mtime } : undefined;
   const file = vault.getAbstractFileByPath(path);
   if (file instanceof TFile) {
-    await vault.modifyBinary(file, data);
+    await vault.modifyBinary(file, data, options);
     return;
   }
   try {
-    await vault.createBinary(path, data);
+    await vault.createBinary(path, data, options);
   } catch {
-    await vault.adapter.writeBinary(path, data);
+    await vault.adapter.writeBinary(path, data, options);
   }
 }
 
@@ -58,14 +52,6 @@ async function ensureFolder(vault: Vault, dirPath: string): Promise<void> {
     /* Ignore if it already exists (e.g. created concurrently) */
   }
 }
-
-// Dynamic Node.js fs fallback (to keep desktop-only functionality working)
-let fs: any = null;
-try {
-  if (typeof require !== "undefined") {
-    fs = require("fs");
-  }
-} catch (e) {}
 
 // Slash-based file path utilities
 const pathUtil = {
@@ -561,10 +547,6 @@ export class SyncClient {
             try {
               const currentPath = eofPath;
               const currentMtime = buf.mtime;
-              // fs.utimesSync (desktop-only, below) needs an absolute filesystem path, which the
-              // Vault API has no concept of at all — using the Adapter
-              // (FileSystemAdapter/CapacitorAdapter) is unavoidable here.
-              const fullPath = getAdapterFullPath(this.vault.adapter, currentPath);
 
               const dir = pathUtil.dirname(currentPath);
               await ensureFolder(this.vault, dir);
@@ -601,16 +583,9 @@ export class SyncClient {
                 plainHashForCache = await sha256(plainData);
               }
 
-              await writeBinaryByPath(this.vault, currentPath, plainData);
-
-              if (fs && fs.utimesSync) {
-                try {
-                  const mtimeSec = currentMtime / 1000.0;
-                  fs.utimesSync(fullPath, mtimeSec, mtimeSec);
-                } catch (err) {
-                  console.warn("Failed to set file times via fs.utimesSync:", err);
-                }
-              }
+              // mtime is set here, atomically, via Obsidian's own write options -- works the same
+              // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
+              await writeBinaryByPath(this.vault, currentPath, plainData, currentMtime);
 
               // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
               // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
@@ -742,20 +717,11 @@ export class SyncClient {
     const arrayBuffer = await response.arrayBuffer();
 
     // Write the restored data to the local filesystem
-    const fullPath = getAdapterFullPath(this.vault.adapter, currentPath);
     const dir = pathUtil.dirname(currentPath);
     await ensureFolder(this.vault, dir);
 
+    // No explicit mtime here: a plain write already sets it to "now", which is what we want.
     await writeBinaryByPath(this.vault, currentPath, arrayBuffer);
-    // Set mtime to the current time to keep things consistent
-    if (fs && fs.utimesSync) {
-      try {
-        const nowSec = Date.now() / 1000.0;
-        fs.utimesSync(fullPath, nowSec, nowSec);
-      } catch (err) {
-        console.warn("Failed to set file times via fs.utimesSync:", err);
-      }
-    }
 
     return currentPath;
   }

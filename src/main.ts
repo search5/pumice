@@ -28,14 +28,6 @@ function getAdapterFullPath(adapter: DataAdapter, normalizedPath: string | undef
   throw new Error("지원되지 않는 플랫폼입니다.");
 }
 
-// Dynamic Node.js fs fallback (for desktop debug logging)
-let fs: any = null;
-try {
-  if (typeof require !== "undefined") {
-    fs = require("fs");
-  }
-} catch (e) {}
-
 // Slash-based path utilities
 const pathUtil = {
   join(...parts: string[]): string {
@@ -51,21 +43,6 @@ const pathUtil = {
   }
 };
 
-// Set by setPluginLogPath() once the plugin has loaded
-let _pluginLogPath: string | null = null;
-
-function setPluginLogPath(pluginDir: string) {
-  _pluginLogPath = pathUtil.join(pluginDir, "sync-debug.log");
-}
-
-function fileLog(message: string) {
-  if (!_pluginLogPath || !fs) return;
-  try {
-    const time = new Date().toISOString();
-    fs.appendFileSync(_pluginLogPath, `[${time}] ${message}\n`, "utf8");
-  } catch (e) {}
-}
-
 
 export default class SyncPlugin extends Plugin {
   declare settings: SyncPluginSettings;
@@ -79,8 +56,7 @@ export default class SyncPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
-    setPluginLogPath(getAdapterFullPath(this.app.vault.adapter, this.manifest.dir));
-    this.hasStoredToken = await hasToken();
+    this.hasStoredToken = await hasToken(this.app);
     this.addSettingTab(new SyncSettingTab(this.app, this));
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
@@ -343,7 +319,7 @@ export default class SyncPlugin extends Plugin {
 
   /** Injected as gRPC metadata. Exists in memory only. */
   async getToken(): Promise<string> {
-    return loadToken();
+    return loadToken(this.app);
   }
 
   async testConnection(): Promise<void> {

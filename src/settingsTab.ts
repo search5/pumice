@@ -1,6 +1,5 @@
 import { App, PluginSettingTab, Setting, ButtonComponent, Notice } from "obsidian";
 import type SyncPlugin from "./main";
-import { Platform } from "obsidian";
 import { saveToken, deleteToken } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { t } from "./i18n";
@@ -130,12 +129,9 @@ export class SyncSettingTab extends PluginSettingTab {
   private renderTokenSetting(containerEl: HTMLElement): void {
     const hasToken = this.plugin.hasStoredToken;
 
-    const keychainName = Platform.isMacOS ? "macOS Keychain"
-      : Platform.isWin ? "Windows Credential Manager"
-      : "libsecret (secret-tool)";
     const desc = hasToken
-      ? t("settings.desc-token-set", "A token is set — stored in {{keychain}}", { keychain: keychainName })
-      : t("settings.desc-token-not-set", "Will be stored in {{keychain}}", { keychain: keychainName });
+      ? t("settings.desc-token-set", "A token is set — stored in Obsidian's secure storage")
+      : t("settings.desc-token-not-set", "Will be stored in Obsidian's secure storage");
 
     const setting = new Setting(containerEl)
       .setName(t("settings.option-auth-token", "Authentication token"))
@@ -151,9 +147,9 @@ export class SyncSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           const trimmed = value.trim();
           if (!trimmed) return;
-          await saveToken(trimmed);
+          await saveToken(this.app, trimmed);
           this.plugin.hasStoredToken = true;
-          new Notice(t("settings.msg-token-saved", "Token saved to {{keychain}}", { keychain: keychainName }));
+          new Notice(t("settings.msg-token-saved", "Token saved"));
           text.setValue("");
           this.display();
         });
@@ -168,7 +164,7 @@ export class SyncSettingTab extends PluginSettingTab {
           .setButtonText(t("dialogue.button-delete", "Delete"))
           .setWarning()
           .onClick(async () => {
-            await deleteToken();
+            await deleteToken(this.app);
             this.plugin.hasStoredToken = false;
             new Notice(t("settings.msg-token-deleted", "Token deleted"));
             this.display();
