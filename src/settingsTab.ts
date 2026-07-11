@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, ButtonComponent, Notice } from "obsidian";
 import type SyncPlugin from "./main";
-import { saveToken, deleteToken } from "./tokenStore";
+import { deleteToken } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { t } from "./i18n";
 
@@ -129,22 +129,16 @@ export class SyncSettingTab extends PluginSettingTab {
   private renderTokenSetting(containerEl: HTMLElement): void {
     const hasToken = this.plugin.hasStoredToken;
 
-    const loginDesc = hasToken
+    const desc = hasToken
       ? t("settings.desc-token-set", "A token is set — stored in Obsidian's secure storage")
       : t("settings.desc-login", "Opens the server's login page in your browser and issues this device its own token automatically");
 
-    const loginSetting = new Setting(containerEl)
+    const setting = new Setting(containerEl)
       .setName(t("settings.option-auth-token", "Authentication"))
-      .setDesc(loginDesc)
-      .addButton((btn) =>
-        btn
-          .setButtonText(t("settings.action-login", "Log in"))
-          .setCta()
-          .onClick(() => this.startDeviceLogin())
-      );
+      .setDesc(desc);
 
     if (hasToken) {
-      loginSetting.addButton((btn) =>
+      setting.addButton((btn) =>
         btn
           .setButtonText(t("dialogue.button-delete", "Delete"))
           .setWarning()
@@ -155,31 +149,14 @@ export class SyncSettingTab extends PluginSettingTab {
             this.display();
           })
       );
+    } else {
+      setting.addButton((btn) =>
+        btn
+          .setButtonText(t("settings.action-login", "Log in"))
+          .setCta()
+          .onClick(() => this.startDeviceLogin())
+      );
     }
-
-    new Setting(containerEl)
-      .setName(t("settings.option-auth-token-manual", "Enter token manually"))
-      .setDesc(t("settings.desc-token-manual", "Advanced: paste a device token issued elsewhere instead of logging in"))
-      .addText((text) => {
-        text
-          .setPlaceholder(
-            hasToken
-              ? t("settings.placeholder-token-change", "Enter a new token to change it")
-              : t("settings.placeholder-token-new", "Enter the token issued by the server")
-          )
-          .onChange(async (value) => {
-            const trimmed = value.trim();
-            if (!trimmed) return;
-            await saveToken(this.app, trimmed);
-            this.plugin.hasStoredToken = true;
-            new Notice(t("settings.msg-token-saved", "Token saved"));
-            text.setValue("");
-            this.display();
-          });
-        text.inputEl.type = "password";
-        text.inputEl.autocomplete = "off";
-        return text;
-      });
   }
 
   // Opens the server's /login page in the system browser with a redirect back to this plugin's
