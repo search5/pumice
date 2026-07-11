@@ -2,6 +2,7 @@ import { AbstractInputSuggest, App, Modal, Notice, Setting, TFile, TFolder, norm
 import SyncPlugin from "./main";
 import { SyncClient } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
+import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -34,24 +35,6 @@ async function computeHash(data: ArrayBuffer): Promise<string> {
 // include and exclude folders.
 function isUnderFolder(path: string, folders: string[]): boolean {
   return folders.some(f => f && (path === f || path.startsWith(f + "/")));
-}
-
-// Runs `fn` over `items` with at most `limit` in flight at once, preserving result order (result[i]
-// corresponds to items[i] regardless of completion order). Reading+hashing every file one at a time
-// is fine on desktop's native fs, but on mobile each vault read crosses the Capacitor bridge, so
-// doing them serially turns an O(files) round-trip cost into a very visible delay — this lets those
-// round-trips overlap instead.
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const i = cursor++;
-      results[i] = await fn(items[i]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 const HASH_CONCURRENCY = 8;

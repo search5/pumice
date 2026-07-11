@@ -3,6 +3,7 @@ import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
 import { TFile, Vault, Notice } from "obsidian";
 import { ContentHashCache } from "./contentHashCache";
+import { mapWithConcurrency } from "./concurrency";
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
@@ -287,40 +288,63 @@ export class SyncClient {
     const metadata = getMetadata(this.token, this.settings);
     const vaultId = this.vault.getName();
 
-    // 1. Scan local file metadata
-    const allFiles = this.vault.getFiles();
-    const localFilesMeta: any[] = [];
+    // 1. Scan local file metadata. Reading and hashing every file one at a time (as this used to
+    // do unconditionally) is what made regular sync so much slower than it needed to be on any
+    // vault of real size, especially on mobile where each vault read crosses the Capacitor
+    // bridge: SCAN_CONCURRENCY overlaps those reads, and (when E2EE is off) ContentHashCache
+    // skips the read+hash entirely for any file whose mtime/size haven't changed since it was
+    // last scanned -- the common case for the vast majority of files on every sync after the
+    // first. E2EE is the exception: AES-GCM uses a fresh random IV per encryption, so the wire
+    // hash is never stable across runs even when the plaintext hasn't changed, and has to be
+    // recomputed every time regardless of the cache.
+    const SCAN_CONCURRENCY = 8;
+    const filesToScan = this.vault.getFiles().filter((f) => !this.isIgnored(f.path));
     const hashCacheEntries: Array<{ file: TFile; hash: string }> = [];
 
-    for (const file of allFiles) {
-      if (this.isIgnored(file.path)) {
-        continue;
+    const scanResults = await mapWithConcurrency(filesToScan, SCAN_CONCURRENCY, async (file) => {
+      let size: number;
+      let hash: string;
+      let plainHashForCache: string;
+
+      if (this.settings.enableE2EE && this.settings.e2eePassword) {
+        const arrayBuffer = await this.vault.readBinary(file);
+        const meta = await this.getFileMetadataFromBuffer(arrayBuffer);
+        size = meta.size;
+        hash = meta.hash;
+        plainHashForCache = await sha256(arrayBuffer);
+      } else if (this.hashCache) {
+        hash = await this.hashCache.getHash(file, async () => {
+          const arrayBuffer = await this.vault.readBinary(file);
+          return sha256(arrayBuffer);
+        });
+        size = file.stat.size;
+        plainHashForCache = hash;
+      } else {
+        const arrayBuffer = await this.vault.readBinary(file);
+        hash = await sha256(arrayBuffer);
+        size = arrayBuffer.byteLength;
+        plainHashForCache = hash;
       }
 
-      const arrayBuffer = await this.vault.readBinary(file);
-      const { size, hash } = await this.getFileMetadataFromBuffer(arrayBuffer);
-      localFilesMeta.push({
-        path: file.path,
-        modified_at_ms: file.stat.mtime,
-        size_bytes: size,
-        content_hash: hash,
-        is_deleted: false,
-      });
+      return { file, hash, size, plainHashForCache };
+    });
 
-      // Seeds the same cache Publish's diff scan reads from — regular sync already reads and hashes
-      // every file, so by the time Publish checks anything it's very likely already cached. `hash`
-      // above is only the plaintext hash when E2EE is off; hash it again when E2EE is on (cheap, no
-      // extra I/O — the plaintext bytes are already in memory). Collected and written in one batch
-      // below rather than per file — a separate IndexedDB transaction per file noticeably slows this
-      // loop down once there are hundreds/thousands of files.
-      if (this.hashCache) {
-        const plainHash = this.settings.enableE2EE && this.settings.e2eePassword
-          ? await sha256(arrayBuffer)
-          : hash;
-        hashCacheEntries.push({ file, hash: plainHash });
-      }
+    const localFilesMeta: any[] = scanResults.map((r) => ({
+      path: r.file.path,
+      modified_at_ms: r.file.stat.mtime,
+      size_bytes: r.size,
+      content_hash: r.hash,
+      is_deleted: false,
+    }));
+
+    // Seeds the same cache Publish's diff scan reads from, and re-seeds it here too so an
+    // unchanged file's next scan (regular sync or Publish) stays a cache hit. Collected and
+    // written in one batch rather than per file — a separate IndexedDB transaction per file
+    // noticeably slows this down once there are hundreds/thousands of files.
+    if (this.hashCache) {
+      for (const r of scanResults) hashCacheEntries.push({ file: r.file, hash: r.plainHashForCache });
+      this.hashCache.setMany(hashCacheEntries);
     }
-    this.hashCache?.setMany(hashCacheEntries);
 
     // Explicitly include the bookmarks file in sync — .obsidian/bookmarks.json is a config file
     // outside the vault index, so it's never picked up as a TFile. The Vault API has no way to
@@ -423,12 +447,18 @@ export class SyncClient {
     // 4. UploadFiles (gRPC-Web batch request)
     if (needUploadList.length > 0) {
       const uploadBatch = new pb.UploadBatch();
-      const chunksList: pb.FileChunk[] = [];
 
-      for (const uploadPath of needUploadList) {
+      // Same fix as the scan step above and for the same reason: reading/hashing each file to
+      // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This overlaps
+      // them instead. mapWithConcurrency preserves per-item result order, so flattening
+      // perFileChunks reproduces exactly the same overall chunk sequence the old sequential loop
+      // would have -- each file's own [header, data..., eof] triplet stays intact and in order,
+      // only which files finish preparing in what wall-clock order changes.
+      const UPLOAD_PREP_CONCURRENCY = 8;
+      const perFileChunks = await mapWithConcurrency(needUploadList, UPLOAD_PREP_CONCURRENCY, async (uploadPath): Promise<pb.FileChunk[]> => {
         try {
           const exists = await existsByPath(this.vault, uploadPath);
-          if (!exists) continue;
+          if (!exists) return [];
 
           const arrayBuffer = await readBinaryByPath(this.vault, uploadPath);
 
@@ -446,6 +476,8 @@ export class SyncClient {
           const stat = await statByPath(this.vault, uploadPath);
           const mtime = stat ? stat.mtime : Date.now();
 
+          const fileChunks: pb.FileChunk[] = [];
+
           // Header chunk
           const headerChunk = new pb.FileChunk();
           const header = new pb.ChunkHeader();
@@ -454,7 +486,7 @@ export class SyncClient {
           header.setTotalBytes(sendBuffer.byteLength);
           header.setModifiedAtMs(mtime);
           headerChunk.setHeader(header);
-          chunksList.push(headerChunk);
+          fileChunks.push(headerChunk);
 
           // Data chunks
           const CHUNK_SIZE = 256 * 1024;
@@ -467,7 +499,7 @@ export class SyncClient {
             dataPayload.setSequence(sequence++);
             dataPayload.setData(new Uint8Array(chunk));
             dataChunk.setData(dataPayload);
-            chunksList.push(dataChunk);
+            fileChunks.push(dataChunk);
           }
 
           // EOF chunk
@@ -476,13 +508,16 @@ export class SyncClient {
           eof.setPath(uploadPath);
           eof.setContentHash(contentHash);
           eofChunk.setEof(eof);
-          chunksList.push(eofChunk);
+          fileChunks.push(eofChunk);
+
+          return fileChunks;
         } catch (err) {
           console.error(`Error preparation ${uploadPath} for upload:`, err);
+          return [];
         }
-      }
+      });
 
-      uploadBatch.setChunksList(chunksList);
+      uploadBatch.setChunksList(perFileChunks.flat());
 
       // Handle the server's streaming response
       await new Promise<void>((resolve, reject) => {
