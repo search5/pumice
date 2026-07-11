@@ -129,37 +129,22 @@ export class SyncSettingTab extends PluginSettingTab {
   private renderTokenSetting(containerEl: HTMLElement): void {
     const hasToken = this.plugin.hasStoredToken;
 
-    const desc = hasToken
+    const loginDesc = hasToken
       ? t("settings.desc-token-set", "A token is set — stored in Obsidian's secure storage")
-      : t("settings.desc-token-not-set", "Will be stored in Obsidian's secure storage");
+      : t("settings.desc-login", "Opens the server's login page in your browser and issues this device its own token automatically");
 
-    const setting = new Setting(containerEl)
-      .setName(t("settings.option-auth-token", "Authentication token"))
-      .setDesc(desc);
-
-    setting.addText((text) => {
-      text
-        .setPlaceholder(
-          hasToken
-            ? t("settings.placeholder-token-change", "Enter a new token to change it")
-            : t("settings.placeholder-token-new", "Enter the token issued by the server")
-        )
-        .onChange(async (value) => {
-          const trimmed = value.trim();
-          if (!trimmed) return;
-          await saveToken(this.app, trimmed);
-          this.plugin.hasStoredToken = true;
-          new Notice(t("settings.msg-token-saved", "Token saved"));
-          text.setValue("");
-          this.display();
-        });
-      text.inputEl.type = "password";
-      text.inputEl.autocomplete = "off";
-      return text;
-    });
+    const loginSetting = new Setting(containerEl)
+      .setName(t("settings.option-auth-token", "Authentication"))
+      .setDesc(loginDesc)
+      .addButton((btn) =>
+        btn
+          .setButtonText(t("settings.action-login", "Log in"))
+          .setCta()
+          .onClick(() => this.startDeviceLogin())
+      );
 
     if (hasToken) {
-      setting.addButton((btn) =>
+      loginSetting.addButton((btn) =>
         btn
           .setButtonText(t("dialogue.button-delete", "Delete"))
           .setWarning()
@@ -171,6 +156,46 @@ export class SyncSettingTab extends PluginSettingTab {
           })
       );
     }
+
+    new Setting(containerEl)
+      .setName(t("settings.option-auth-token-manual", "Enter token manually"))
+      .setDesc(t("settings.desc-token-manual", "Advanced: paste a device token issued elsewhere instead of logging in"))
+      .addText((text) => {
+        text
+          .setPlaceholder(
+            hasToken
+              ? t("settings.placeholder-token-change", "Enter a new token to change it")
+              : t("settings.placeholder-token-new", "Enter the token issued by the server")
+          )
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            if (!trimmed) return;
+            await saveToken(this.app, trimmed);
+            this.plugin.hasStoredToken = true;
+            new Notice(t("settings.msg-token-saved", "Token saved"));
+            text.setValue("");
+            this.display();
+          });
+        text.inputEl.type = "password";
+        text.inputEl.autocomplete = "off";
+        return text;
+      });
+  }
+
+  // Opens the server's /login page in the system browser with a redirect back to this plugin's
+  // obsidian:// protocol handler (registered in main.ts) -- login there hands back a device
+  // token automatically instead of the user having to copy/paste one.
+  private startDeviceLogin(): void {
+    const { serverHost, serverPort, useTls, deviceName } = this.plugin.settings;
+    if (!serverHost) {
+      new Notice(t("settings.msg-login-no-server", "Set the server address first."));
+      return;
+    }
+    const protocol = useTls ? "https" : "http";
+    const url = new URL(`${protocol}://${serverHost}:${serverPort}/login`);
+    url.searchParams.set("redirect", "obsidian://pumice-auth");
+    url.searchParams.set("device_name", deviceName || "Obsidian Client");
+    window.open(url.toString(), "_blank");
   }
 
   private renderSyncTargetSection(containerEl: HTMLElement): void {

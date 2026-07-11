@@ -1,7 +1,7 @@
 import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { DEFAULT_SETTINGS, type SyncPluginSettings } from "./settings";
-import { loadToken, hasToken } from "./tokenStore";
+import { loadToken, hasToken, saveToken } from "./tokenStore";
 import { SyncClient } from "./syncClient";
 import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
@@ -58,6 +58,24 @@ export default class SyncPlugin extends Plugin {
     await this.loadSettings();
     this.hasStoredToken = await hasToken(this.app);
     this.addSettingTab(new SyncSettingTab(this.app, this));
+
+    // Callback target for the "Log in" button in settings: opens the server's /login page in the
+    // system browser, and once the user authenticates there, it redirects back here with a
+    // freshly issued device token instead of making the user copy/paste one by hand.
+    this.registerObsidianProtocolHandler("pumice-auth", async (params) => {
+      const token = params.token;
+      if (!token) {
+        new Notice(t("settings.msg-login-callback-missing-token", "Login callback is missing a token."));
+        return;
+      }
+      await saveToken(this.app, token);
+      this.hasStoredToken = true;
+      new Notice(
+        params.username
+          ? t("settings.msg-login-success-named", "Logged in as {{username}} — token saved.", { username: params.username })
+          : t("settings.msg-login-success", "Logged in — token saved.")
+      );
+    });
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
     // our own DB and subscribe to vault events ourselves (localSnapshotStore.ts). This feature is
