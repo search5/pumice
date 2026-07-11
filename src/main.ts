@@ -50,6 +50,7 @@ export default class SyncPlugin extends Plugin {
   deletedFiles: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
+  settingTab!: SyncSettingTab;
   private autoSyncTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private ribbonReplaceTimers: number[] = [];
@@ -57,7 +58,8 @@ export default class SyncPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.hasStoredToken = await hasToken(this.app);
-    this.addSettingTab(new SyncSettingTab(this.app, this));
+    this.settingTab = new SyncSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     // Callback target for the "Log in" button in settings: opens the server's /login page in the
     // system browser, and once the user authenticates there, it redirects back here with a
@@ -75,6 +77,10 @@ export default class SyncPlugin extends Plugin {
           ? t("settings.msg-login-success-named", "Logged in as {{username}} — token saved.", { username: params.username })
           : t("settings.msg-login-success", "Logged in — token saved.")
       );
+      // The settings tab may already be open (that's usually how the user got to the "Log in"
+      // button in the first place) and won't otherwise know the token changed underneath it --
+      // re-render so it reflects the new state instead of still showing the login prompt.
+      this.settingTab.display();
     });
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
