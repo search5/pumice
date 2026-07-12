@@ -203,6 +203,13 @@ export class SyncClient {
     );
   }
 
+  // Fingerprints the current E2EE password so cached wire hashes (ContentHashCache.getWireHash)
+  // can detect a password change and refuse to reuse ciphertext hashes computed under the old key.
+  private async getKeyFingerprint(): Promise<string> {
+    const password = this.settings.e2eePassword || "";
+    return sha256(new TextEncoder().encode(password).buffer as ArrayBuffer);
+  }
+
   private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer): Promise<{ size: number; hash: string }> {
     if (this.settings.enableE2EE && this.settings.e2eePassword) {
       const key = await this.getE2eeKey();
@@ -291,27 +298,46 @@ export class SyncClient {
     // 1. Scan local file metadata. Reading and hashing every file one at a time (as this used to
     // do unconditionally) is what made regular sync so much slower than it needed to be on any
     // vault of real size, especially on mobile where each vault read crosses the Capacitor
-    // bridge: SCAN_CONCURRENCY overlaps those reads, and (when E2EE is off) ContentHashCache
-    // skips the read+hash entirely for any file whose mtime/size haven't changed since it was
-    // last scanned -- the common case for the vast majority of files on every sync after the
-    // first. E2EE is the exception: AES-GCM uses a fresh random IV per encryption, so the wire
-    // hash is never stable across runs even when the plaintext hasn't changed, and has to be
-    // recomputed every time regardless of the cache.
+    // bridge: SCAN_CONCURRENCY overlaps those reads, and ContentHashCache skips the read+hash
+    // entirely for any file whose mtime/size haven't changed since it was last scanned -- the
+    // common case for the vast majority of files on every sync after the first. This applies to
+    // E2EE too: AES-GCM's IV here is deterministically derived from the plaintext hash (see
+    // encryptData above), not random, so re-encrypting unchanged content always reproduces the
+    // same ciphertext -- the wire hash is cached the same way, additionally keyed to the current
+    // password (getKeyFingerprint) so a password change can't reuse a stale ciphertext hash.
     const SCAN_CONCURRENCY = 8;
     const filesToScan = this.vault.getFiles().filter((f) => !this.isIgnored(f.path));
     const hashCacheEntries: Array<{ file: TFile; hash: string }> = [];
+    const keyFingerprint =
+      this.settings.enableE2EE && this.settings.e2eePassword ? await this.getKeyFingerprint() : "";
 
     const scanResults = await mapWithConcurrency(filesToScan, SCAN_CONCURRENCY, async (file) => {
       let size: number;
       let hash: string;
       let plainHashForCache: string;
+      let cacheable = true;
 
       if (this.settings.enableE2EE && this.settings.e2eePassword) {
-        const arrayBuffer = await this.vault.readBinary(file);
-        const meta = await this.getFileMetadataFromBuffer(arrayBuffer);
-        size = meta.size;
-        hash = meta.hash;
-        plainHashForCache = await sha256(arrayBuffer);
+        if (this.hashCache) {
+          const meta = await this.hashCache.getWireHash(file, keyFingerprint, async () => {
+            const arrayBuffer = await this.vault.readBinary(file);
+            const encMeta = await this.getFileMetadataFromBuffer(arrayBuffer);
+            return { plainHash: await sha256(arrayBuffer), wireHash: encMeta.hash, wireSize: encMeta.size };
+          });
+          hash = meta.wireHash;
+          size = meta.wireSize;
+          plainHashForCache = meta.plainHash;
+          // getWireHash already persisted the full record (plain hash + wire hash + fingerprint)
+          // itself -- pushing it into the setMany batch below would overwrite that record with one
+          // that's missing the wire fields, since IndexedDB put() replaces the whole value.
+          cacheable = false;
+        } else {
+          const arrayBuffer = await this.vault.readBinary(file);
+          const meta = await this.getFileMetadataFromBuffer(arrayBuffer);
+          size = meta.size;
+          hash = meta.hash;
+          plainHashForCache = await sha256(arrayBuffer);
+        }
       } else if (this.hashCache) {
         hash = await this.hashCache.getHash(file, async () => {
           const arrayBuffer = await this.vault.readBinary(file);
@@ -326,7 +352,7 @@ export class SyncClient {
         plainHashForCache = hash;
       }
 
-      return { file, hash, size, plainHashForCache };
+      return { file, hash, size, plainHashForCache, cacheable };
     });
 
     const localFilesMeta: any[] = scanResults.map((r) => ({
@@ -342,7 +368,9 @@ export class SyncClient {
     // written in one batch rather than per file — a separate IndexedDB transaction per file
     // noticeably slows this down once there are hundreds/thousands of files.
     if (this.hashCache) {
-      for (const r of scanResults) hashCacheEntries.push({ file: r.file, hash: r.plainHashForCache });
+      for (const r of scanResults) {
+        if (r.cacheable) hashCacheEntries.push({ file: r.file, hash: r.plainHashForCache });
+      }
       this.hashCache.setMany(hashCacheEntries);
     }
 
@@ -711,6 +739,14 @@ export class SyncClient {
     const path = `/api/history/download?vault_id=${encodeURIComponent(vaultId)}&history_id=${historyId}`;
 
     const arrayBuffer = await this.requestHttp("GET", path, null, true);
+
+    // History is stored server-side exactly as it was uploaded -- ciphertext when E2EE is on,
+    // same as regular sync's UploadFiles/DownloadFiles. Every caller of this (version preview,
+    // diff, copy) expects plaintext back, same as the regular download path already decrypts.
+    if (this.settings.enableE2EE && this.settings.e2eePassword) {
+      const key = await this.getE2eeKey();
+      return this.decryptData(arrayBuffer, key);
+    }
     return arrayBuffer;
   }
 
@@ -749,7 +785,15 @@ export class SyncClient {
       throw new Error("Failed to determine restore file path from server response header.");
     }
 
-    const arrayBuffer = await response.arrayBuffer();
+    let arrayBuffer = await response.arrayBuffer();
+
+    // Same as downloadHistoryVersion: the backup is stored as ciphertext when E2EE is on, and
+    // has to be decrypted before it's written back into the vault -- otherwise "restore" replaces
+    // the note's actual content with raw ciphertext.
+    if (this.settings.enableE2EE && this.settings.e2eePassword) {
+      const key = await this.getE2eeKey();
+      arrayBuffer = await this.decryptData(arrayBuffer, key);
+    }
 
     // Write the restored data to the local filesystem
     const dir = pathUtil.dirname(currentPath);

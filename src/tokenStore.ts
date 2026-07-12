@@ -35,3 +35,14 @@ export async function deleteToken(app: App): Promise<void> {
 export async function hasToken(app: App): Promise<boolean> {
   return (await loadToken(app)) !== "";
 }
+
+// E2EE sync password -- same rationale as the auth token above: never let it touch data.json.
+const E2EE_PASSWORD_SECRET_ID = "e2ee-password";
+
+export async function saveE2eePassword(app: App, password: string): Promise<void> {
+  app.secretStorage.setSecret(E2EE_PASSWORD_SECRET_ID, password);
+}
+
+export async function loadE2eePassword(app: App): Promise<string> {
+  return app.secretStorage.getSecret(E2EE_PASSWORD_SECRET_ID) || "";
+}

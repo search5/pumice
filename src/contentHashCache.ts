@@ -4,6 +4,13 @@ interface CachedHash {
   mtime: number;
   size: number;
   hash: string;
+  // E2EE wire (ciphertext) hash/size -- cached separately from the plaintext hash above, since the
+  // ciphertext (and therefore its hash) depends on the encryption key as well as the file content.
+  // keyFingerprint pins the cached value to the password it was derived under, so an E2EE password
+  // change invalidates every cached wire hash instead of silently reusing stale ciphertext hashes.
+  wireHash?: string;
+  wireSize?: number;
+  keyFingerprint?: string;
 }
 
 // Publish's diff scan (and, in principle, anything else that needs a file's content hash) has to
@@ -65,6 +72,41 @@ export class ContentHashCache {
     const hash = await compute();
     this.put(file.path, { mtime: file.stat.mtime, size: file.stat.size, hash });
     return hash;
+  }
+
+  /**
+   * E2EE counterpart to getHash(): AES-GCM's IV here is deterministically derived from the
+   * plaintext hash (see syncClient.ts's encryptData), so re-encrypting unchanged content always
+   * reproduces the same ciphertext -- the wire hash is just as cacheable as the plaintext hash,
+   * keyed the same way (mtime+size) plus keyFingerprint to catch password changes. On a cache hit
+   * this skips reading and re-encrypting the file entirely, same as getHash() skips reading it.
+   */
+  async getWireHash(
+    file: TFile,
+    keyFingerprint: string,
+    compute: () => Promise<{ plainHash: string; wireHash: string; wireSize: number }>
+  ): Promise<{ plainHash: string; wireHash: string; wireSize: number }> {
+    const cached = await this.get(file.path);
+    if (
+      cached &&
+      cached.mtime === file.stat.mtime &&
+      cached.size === file.stat.size &&
+      cached.keyFingerprint === keyFingerprint &&
+      cached.wireHash !== undefined &&
+      cached.wireSize !== undefined
+    ) {
+      return { plainHash: cached.hash, wireHash: cached.wireHash, wireSize: cached.wireSize };
+    }
+    const result = await compute();
+    this.put(file.path, {
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+      hash: result.plainHash,
+      wireHash: result.wireHash,
+      wireSize: result.wireSize,
+      keyFingerprint,
+    });
+    return result;
   }
 
   /**

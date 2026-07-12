@@ -17,8 +17,8 @@ export interface SyncPluginSettings {
 
   conflictResolution: ConflictResolution;
 
+  // The password itself lives in app.secretStorage (see tokenStore.ts), never in data.json.
   enableE2EE: boolean;
-  e2eePassword?: string;
 
   publishIncludeFolders: string;
   publishExcludeFolders: string;
@@ -52,7 +52,6 @@ export const DEFAULT_SETTINGS: SyncPluginSettings = {
   conflictResolution: "manual",
 
   enableE2EE: false,
-  e2eePassword: "",
 
   publishIncludeFolders: "",
   publishExcludeFolders: [
