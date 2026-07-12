@@ -27,44 +27,44 @@ export interface SyncPluginSettings {
   localSnapshotKeepDays: number;
 }
 
-export const DEFAULT_SETTINGS: SyncPluginSettings = {
-  serverHost: "localhost",
-  serverPort: 8080,
-  useTls: false,
-  deviceName: "Obsidian Client",
-  userName: "Obsidian User",
-
-  syncFiles: true,
-  syncBookmarks: true,
-  ignorePatterns: [
-    ".obsidian/workspace",
-    ".obsidian/workspace.json",
-    ".obsidian/workspace-mobile.json",
-    ".obsidian/cache",
-    ".obsidian/plugins/pumice",
+// A function of the vault's config dir, not a static constant: it's usually ".obsidian", but
+// Obsidian lets it be renamed per-vault (Vault#configDir), and these default patterns need to
+// match whatever it actually is for a given vault rather than assuming the common case.
+export function getDefaultSettings(configDir: string): SyncPluginSettings {
+  const defaultExcludePatterns = [
+    `${configDir}/workspace`,
+    `${configDir}/workspace.json`,
+    `${configDir}/workspace-mobile.json`,
+    `${configDir}/cache`,
+    `${configDir}/plugins/pumice`,
     ".trash",
-  ].join("\n"),
+  ].join("\n");
 
-  autoSync: false,
-  syncIntervalSeconds: 60,
-  syncOnStartup: false,
+  return {
+    serverHost: "localhost",
+    serverPort: 8080,
+    useTls: false,
+    deviceName: "Obsidian Client",
+    userName: "Obsidian User",
 
-  conflictResolution: "manual",
+    syncFiles: true,
+    syncBookmarks: true,
+    ignorePatterns: defaultExcludePatterns,
 
-  enableE2EE: false,
+    autoSync: false,
+    syncIntervalSeconds: 60,
+    syncOnStartup: false,
 
-  publishIncludeFolders: "",
-  publishExcludeFolders: [
-    ".obsidian/workspace",
-    ".obsidian/workspace.json",
-    ".obsidian/workspace-mobile.json",
-    ".obsidian/cache",
-    ".obsidian/plugins/pumice",
-    ".trash",
-  ].join("\n"),
+    conflictResolution: "manual",
 
-  localSnapshotIntervalMinutes: 5,
-  localSnapshotKeepDays: 7,
-};
+    enableE2EE: false,
+
+    publishIncludeFolders: "",
+    publishExcludeFolders: defaultExcludePatterns,
+
+    localSnapshotIntervalMinutes: 5,
+    localSnapshotKeepDays: 7,
+  };
+}
 
 

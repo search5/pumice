@@ -13,7 +13,8 @@ export interface LocalSnapshotStoreOptions {
 
 const SNAPSHOT_EXTENSIONS = ["md", "canvas", "base"];
 // Sorts autocomplete candidate paths in the same order as core (natural sort via Intl.Collator with numeric: true).
-const pathCollator = new Intl.Collator(undefined, { usage: "sort", sensitivity: "base", numeric: true }).compare;
+const pathCollatorInstance = new Intl.Collator(undefined, { usage: "sort", sensitivity: "base", numeric: true });
+const pathCollator = (a: string, b: string) => pathCollatorInstance.compare(a, b);
 
 // Reproduces the same policy as core's built-in "File Recovery" plugin (reverse-engineered from
 // obsidian.asar/app.js, class O8: interval debouncing + skip-if-unchanged + retention cleanup +
@@ -167,7 +168,7 @@ export class LocalSnapshotStore {
         req.onsuccess = () => {
           const cursor = req.result;
           if (cursor) {
-            paths.push(cursor.value.path);
+            paths.push((cursor.value as LocalSnapshot).path);
             cursor.continue();
           } else {
             resolve(paths.sort(pathCollator));

@@ -207,7 +207,7 @@ export class SyncSettingTab extends PluginSettingTab {
       .setDesc(t("settings.option-ignore-patterns-desc", "Paths to exclude from sync (one per line, glob supported)"))
       .addTextArea((area) =>
         area
-          .setPlaceholder(".obsidian/workspace\n*.tmp")
+          .setPlaceholder(`${this.app.vault.configDir}/workspace\n*.tmp`)
           .setValue(this.plugin.settings.ignorePatterns)
           .onChange(async (value) => {
             this.plugin.settings.ignorePatterns = value;
@@ -387,7 +387,7 @@ export class SyncSettingTab extends PluginSettingTab {
     try {
       await this.plugin.testConnection();
       new Notice(t("settings.msg-connection-success", "Server connection successful"));
-    } catch (e) {
+    } catch (e: unknown) {
       new Notice(t("settings.msg-connection-failed", "Server connection failed: {{error}}", {
         error: e instanceof Error ? e.message : String(e),
       }));

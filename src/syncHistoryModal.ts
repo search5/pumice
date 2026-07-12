@@ -1,9 +1,10 @@
-import { App, ButtonComponent, MarkdownRenderer, Modal, Notice, Platform, TFile, moment, setIcon, setTooltip } from "obsidian";
+import { App, ButtonComponent, Component, MarkdownRenderer, Modal, Notice, Platform, TFile, moment, setIcon, setTooltip } from "obsidian";
 import SyncPlugin from "./main";
 import { t } from "./i18n";
 import { renderDiff } from "./diffView";
 import { enableSwipeNavigation } from "./swipeNavigation";
 import { hasLocalSnapshots, LocalSnapshotModal } from "./fileRecoveryModal";
+import { errorMessage } from "./errorMessage";
 
 interface HistoryVersion {
   history_id: number;
@@ -104,7 +105,7 @@ export class SyncHistoryModal extends Modal {
   private activeOlderItem: HistoryVersion | null = null;
   private contentCache: Map<number, ArrayBuffer> = new Map();
   private currentToggleHandler: (() => Promise<void>) | null = null;
-  private diffOn = !!localStorage.getItem(DIFF_TOGGLE_STORAGE_KEY);
+  private diffOn = false;
 
   private listEl!: HTMLElement;
   private loadMoreButtonEl!: HTMLButtonElement;
@@ -131,6 +132,11 @@ export class SyncHistoryModal extends Modal {
   private mobileLayoutEl!: HTMLElement;
   private swipeCleanup: (() => void) | null = null;
 
+  // Owns the lifecycle of anything rendered into this modal (e.g. MarkdownRenderer.render's
+  // child elements/event listeners) -- scoped to the modal itself, not the plugin, so it's
+  // unloaded on close instead of living as long as the plugin does.
+  private renderComponent = new Component();
+
   constructor(
     readonly app: App,
     readonly plugin: SyncPlugin,
@@ -138,9 +144,12 @@ export class SyncHistoryModal extends Modal {
   ) {
     super(app);
     this.modalEl.addClass(this.isDesktop ? "grpc-history-modal-desktop" : "grpc-history-modal-mobile");
+    this.diffOn = !!this.app.loadLocalStorage(DIFF_TOGGLE_STORAGE_KEY);
   }
 
   async onOpen() {
+    this.renderComponent.load();
+
     const { contentEl } = this;
     contentEl.empty();
     this.titleEl.setText(this.file.path);
@@ -169,6 +178,7 @@ export class SyncHistoryModal extends Modal {
   }
 
   onClose() {
+    this.renderComponent.unload();
     this.swipeCleanup?.();
     this.contentEl.empty();
   }
@@ -182,7 +192,7 @@ export class SyncHistoryModal extends Modal {
       cls: "grpc-history-load-more",
       text: t("plugins.sync.label-load-more", "Load more"),
     });
-    this.loadMoreButtonEl.addEventListener("click", () => this.fetchMore());
+    this.loadMoreButtonEl.addEventListener("click", () => void this.fetchMore());
 
     const contentPaneEl = layoutEl.createDiv("grpc-desktop-content");
     const headerEl = contentPaneEl.createDiv("grpc-desktop-content-header");
@@ -201,11 +211,11 @@ export class SyncHistoryModal extends Modal {
     const actionBarEl = contentPaneEl.createDiv("grpc-preview-actionbar");
     this.copyButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("interface.label-copy-short", "Copy"))
-      .onClick(() => this.copyActiveContent());
+      .onClick(() => void this.copyActiveContent());
     this.restoreButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("plugins.sync.label-restore-this-version", "Restore this version"))
       .setCta()
-      .onClick(() => this.restoreActiveVersion());
+      .onClick(() => void this.restoreActiveVersion());
 
     // Register arrow keys via Modal's built-in Scope (public API) — desktop only.
     this.scope.register(null, "ArrowUp", () => {
@@ -227,7 +237,7 @@ export class SyncHistoryModal extends Modal {
       cls: "grpc-history-load-more",
       text: t("plugins.sync.label-load-more", "Load more"),
     });
-    this.loadMoreButtonEl.addEventListener("click", () => this.fetchMore());
+    this.loadMoreButtonEl.addEventListener("click", () => void this.fetchMore());
 
     const previewScreenEl = this.mobileLayoutEl.createDiv("grpc-history-preview-screen grpc-mobile-screen");
     this.previewBodyEl = previewScreenEl.createDiv("grpc-preview-body");
@@ -237,11 +247,11 @@ export class SyncHistoryModal extends Modal {
     const actionBarEl = previewScreenEl.createDiv("grpc-preview-actionbar");
     this.copyButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("interface.label-copy-short", "Copy"))
-      .onClick(() => this.copyActiveContent());
+      .onClick(() => void this.copyActiveContent());
     this.restoreButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("plugins.sync.label-restore-this-version", "Restore this version"))
       .setCta()
-      .onClick(() => this.restoreActiveVersion());
+      .onClick(() => void this.restoreActiveVersion());
 
     this.swipeCleanup = enableSwipeNavigation(this.previewBodyEl, {
       onPrev: () => this.navigateBy(-1),
@@ -256,8 +266,7 @@ export class SyncHistoryModal extends Modal {
     setTooltip(diffBtn, t("plugins.sync.label-show-diff", "Show diff"));
     diffBtn.addEventListener("click", () => {
       this.diffOn = !this.diffOn;
-      if (this.diffOn) localStorage.setItem(DIFF_TOGGLE_STORAGE_KEY, "true");
-      else localStorage.removeItem(DIFF_TOGGLE_STORAGE_KEY);
+      this.app.saveLocalStorage(DIFF_TOGGLE_STORAGE_KEY, this.diffOn ? true : null);
       diffBtn.toggleClass("is-active", this.diffOn);
       void this.currentToggleHandler?.();
     });
@@ -273,7 +282,7 @@ export class SyncHistoryModal extends Modal {
         const versions: HistoryVersion[] = await client.getFileHistory(this.file.path);
         versions.sort((a, b) => b.modified_at_ms - a.modified_at_ms);
         this.groups = groupHistoryItems(versions);
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error("Failed to load history:", e);
         new Notice(t("plugins.sync.label-unable-to-retrieve", "Unable to retrieve version history"));
         this.listEl.append(this.loadMoreButtonEl);
@@ -617,7 +626,7 @@ export class SyncHistoryModal extends Modal {
           previewRendered = true;
           if (isMarkdown) {
             this.previewEl.addClass("markdown-rendered");
-            await MarkdownRenderer.render(this.app, content, this.previewEl, this.file.path, this.plugin);
+            await MarkdownRenderer.render(this.app, content, this.previewEl, this.file.path, this.renderComponent);
           } else {
             this.previewEl.createEl("pre").setText(content);
           }
@@ -652,8 +661,8 @@ export class SyncHistoryModal extends Modal {
           }),
         });
       }
-    } catch (e: any) {
-      this.previewEl.createDiv({ text: `미리보기 실패: ${e?.message ?? String(e)}` });
+    } catch (e: unknown) {
+      this.previewEl.createDiv({ text: `미리보기 실패: ${errorMessage(e)}` });
     }
   }
 
@@ -663,8 +672,8 @@ export class SyncHistoryModal extends Modal {
       const content = await this.getTextContentForVersion(this.activeItem.history_id);
       await navigator.clipboard.writeText(content);
       new Notice(t("interface.copied_generic", "Copied to clipboard"));
-    } catch (e: any) {
-      new Notice(`복사 실패: ${e?.message ?? String(e)}`);
+    } catch (e: unknown) {
+      new Notice(`복사 실패: ${errorMessage(e)}`);
     }
   }
 
@@ -688,8 +697,8 @@ export class SyncHistoryModal extends Modal {
       );
       void restoredPath;
       this.close();
-    } catch (e: any) {
-      new Notice(`버전 복원 실패: ${e?.message ?? String(e)}`);
+    } catch (e: unknown) {
+      new Notice(`버전 복원 실패: ${errorMessage(e)}`);
     }
   }
 }

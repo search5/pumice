@@ -1,6 +1,6 @@
 import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
-import { DEFAULT_SETTINGS, type SyncPluginSettings } from "./settings";
+import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient } from "./syncClient";
 import { PublishModal } from "./publishModal";
@@ -8,11 +8,12 @@ import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
 import { ContentHashCache } from "./contentHashCache";
 import { t } from "./i18n";
+import { errorMessage } from "./errorMessage";
 
 // The "Vault Sync" ribbon button has no core equivalent, so there's no translation key for it —
 // we just hardcode English/Korean and pick based on Obsidian's UI language (document.documentElement.lang).
 function vaultSyncRibbonLabel(): string {
-  return document.documentElement.lang.toLowerCase().startsWith("ko") ? "Vault 동기화" : "Vault Sync";
+  return activeDocument.documentElement.lang.toLowerCase().startsWith("ko") ? "Vault 동기화" : "Vault Sync";
 }
 
 // DataAdapter's public interface has no getFullPath — it only exists on the concrete desktop
@@ -53,8 +54,12 @@ export default class SyncPlugin extends Plugin {
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
   settingTab!: SyncSettingTab;
-  private autoSyncTimer: ReturnType<typeof setInterval> | null = null;
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Explicit `number`, not ReturnType<typeof window.setInterval/setTimeout>: with @types/node
+  // present (for esbuild.config.mjs), that resolves to Node's Timeout instead of the browser's
+  // number -- but window.setInterval/setTimeout always return a number in the Electron/browser
+  // renderer context a plugin actually runs in.
+  private autoSyncTimer: number | null = null;
+  private debounceTimer: number | null = null;
   private ribbonReplaceTimers: number[] = [];
 
   async onload(): Promise<void> {
@@ -149,7 +154,7 @@ export default class SyncPlugin extends Plugin {
 
     // 2. Find core's original version-history ribbon button and replace it with ours
     const replaceCoreRibbonButton = () => {
-      const ribbonContainer = document.querySelector(".side-dock-ribbon, .ribbon-bar");
+      const ribbonContainer = activeDocument.querySelector(".side-dock-ribbon, .ribbon-bar");
       if (!ribbonContainer) return;
 
       const buttons = ribbonContainer.querySelectorAll(".side-dock-ribbon-action, .clickable-icon");
@@ -182,7 +187,7 @@ export default class SyncPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
         this.deletedFiles[file.path] = Date.now();
-        this.savePluginData();
+        void this.savePluginData();
         this.triggerDebouncedSync();
       })
     );
@@ -197,7 +202,7 @@ export default class SyncPlugin extends Plugin {
           this.deletedFiles[oldPath] = Date.now();
         }
         delete this.deletedFiles[file.path];
-        this.savePluginData();
+        void this.savePluginData();
         this.triggerDebouncedSync();
       })
     );
@@ -205,7 +210,7 @@ export default class SyncPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("create", (file) => {
         delete this.deletedFiles[file.path];
-        this.savePluginData();
+        void this.savePluginData();
         this.triggerDebouncedSync();
       })
     );
@@ -257,7 +262,7 @@ export default class SyncPlugin extends Plugin {
     // File context menu — publish current file (matches original Obsidian behavior: opens the modal)
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file, source) => {
-        if (!("extension" in file)) return; // exclude TFolder
+        if (!(file instanceof TFile)) return; // exclude TFolder
         const publishFileLabel = t("plugins.publish.action-publish-file", "Publish current file");
         menu.addItem((item) => {
           item
@@ -265,7 +270,7 @@ export default class SyncPlugin extends Plugin {
             .setIcon("paper-plane")
             .setSection("action")
             .onClick(() => {
-              new PublishModal(this.app, this, file as TFile).open();
+              new PublishModal(this.app, this, file).open();
             });
         });
 
@@ -283,7 +288,7 @@ export default class SyncPlugin extends Plugin {
               .setIcon("history")
               .setSection("view")
               .onClick(() => {
-                new SyncHistoryModal(this.app, this, file as TFile).open();
+                new SyncHistoryModal(this.app, this, file).open();
               });
           });
         }
@@ -301,6 +306,7 @@ export default class SyncPlugin extends Plugin {
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
     return new SyncClient(
       this.app.vault,
+      this.app.fileManager,
       pluginDir,
       token,
       { ...this.settings, e2eePassword: this.e2eePassword },
@@ -316,7 +322,7 @@ export default class SyncPlugin extends Plugin {
   onunload(): void {
     this.stopAutoSync();
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     for (const id of this.ribbonReplaceTimers) window.clearTimeout(id);
@@ -327,14 +333,16 @@ export default class SyncPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     const data = await this.loadData() || {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || data);
+    this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
     this.deletedFiles = data.deletedFiles || {};
 
     // One-time migration: e2eePassword used to be persisted in plaintext here. Move any leftover
     // value into secretStorage (same treatment as the auth token in tokenStore.ts) and never write
-    // it back to data.json.
-    const legacyPassword = (this.settings as any).e2eePassword;
-    delete (this.settings as any).e2eePassword;
+    // it back to data.json. It's no longer part of SyncPluginSettings, hence the widened cast --
+    // this is specifically reading a field that used to exist, not an arbitrary any-typed access.
+    const settingsWithLegacyPassword = this.settings as SyncPluginSettings & { e2eePassword?: string };
+    const legacyPassword = settingsWithLegacyPassword.e2eePassword;
+    delete settingsWithLegacyPassword.e2eePassword;
     if (legacyPassword) {
       await saveE2eePassword(this.app, legacyPassword);
       await this.savePluginData();
@@ -368,6 +376,7 @@ export default class SyncPlugin extends Plugin {
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
     const client = new SyncClient(
       this.app.vault,
+      this.app.fileManager,
       pluginDir,
       token,
       { ...this.settings, e2eePassword: this.e2eePassword },
@@ -394,6 +403,7 @@ export default class SyncPlugin extends Plugin {
       const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
       const client = new SyncClient(
         this.app.vault,
+        this.app.fileManager,
         pluginDir,
         token,
         { ...this.settings, e2eePassword: this.e2eePassword },
@@ -409,21 +419,21 @@ export default class SyncPlugin extends Plugin {
       new Notice(
         `동기화 완료: 업로드 ${result.uploaded}개, 다운로드 ${result.downloaded}개, 삭제 ${result.deleted}개`
       );
-    } catch (e) {
+    } catch (e: unknown) {
       console.error("Sync failed:", e);
-      new Notice(`동기화 실패: ${e.message || e}`);
+      new Notice(`동기화 실패: ${errorMessage(e)}`);
     }
   }
 
   private startAutoSync(): void {
     if (this.autoSyncTimer) return;
     const ms = this.settings.syncIntervalSeconds * 1000;
-    this.autoSyncTimer = setInterval(() => this.syncNow(), ms);
+    this.autoSyncTimer = window.setInterval(() => this.syncNow(), ms);
   }
 
   private stopAutoSync(): void {
     if (this.autoSyncTimer) {
-      clearInterval(this.autoSyncTimer);
+      window.clearInterval(this.autoSyncTimer);
       this.autoSyncTimer = null;
     }
   }
@@ -439,11 +449,11 @@ export default class SyncPlugin extends Plugin {
     if (!this.settings.autoSync) return;
 
     if (this.debounceTimer) {
-      clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
     }
 
-    this.debounceTimer = setTimeout(() => {
-      this.syncNow();
+    this.debounceTimer = window.setTimeout(() => {
+      void this.syncNow();
     }, 3000); // run after a 3-second debounce delay
   }
 

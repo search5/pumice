@@ -1,9 +1,28 @@
 import { SyncServiceClient } from "./generated/SyncServiceClientPb";
 import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
-import { TFile, Vault, Notice } from "obsidian";
+import { TFile, Vault, FileManager, Notice, requestUrl } from "obsidian";
 import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
+import type { SyncPluginSettings } from "./settings";
+
+// e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
+// tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
+// runtime shape of the settings object this class works with.
+type ClientSettings = SyncPluginSettings & { e2eePassword: string };
+
+// Shape of a single /api/history entry, as returned by the server. Structurally compatible with
+// syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
+export interface HistoryVersionEntry {
+  history_id: number;
+  modified_at_ms: number;
+  size_bytes: number;
+  content_hash: string;
+  device_name: string;
+  user_name: string;
+  deleted?: boolean;
+  related_path?: string | null;
+}
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
@@ -97,7 +116,7 @@ const concatUint8Arrays = (arrays: Uint8Array[]): Uint8Array => {
   return result;
 };
 
-function getMetadata(token: string, settings: any): grpcWeb.Metadata {
+function getMetadata(token: string, settings: ClientSettings): grpcWeb.Metadata {
   return {
     "authorization": `Bearer ${token}`,
     "x-device-name": encodeURIComponent(settings.deviceName || "Unknown Device"),
@@ -108,9 +127,10 @@ function getMetadata(token: string, settings: any): grpcWeb.Metadata {
 export class SyncClient {
   private client: SyncServiceClient;
   private vault: Vault;
+  private fileManager: FileManager;
   private pluginDir: string;
   private token: string;
-  private settings: any;
+  private settings: ClientSettings;
   private deletedFiles: Record<string, number>;
   private updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>;
   private hashCache?: ContentHashCache;
@@ -207,7 +227,7 @@ export class SyncClient {
   // can detect a password change and refuse to reuse ciphertext hashes computed under the old key.
   private async getKeyFingerprint(): Promise<string> {
     const password = this.settings.e2eePassword || "";
-    return sha256(new TextEncoder().encode(password).buffer as ArrayBuffer);
+    return sha256(new TextEncoder().encode(password).buffer);
   }
 
   private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer): Promise<{ size: number; hash: string }> {
@@ -224,14 +244,16 @@ export class SyncClient {
 
   constructor(
     vault: Vault,
+    fileManager: FileManager,
     pluginDir: string,
     token: string,
-    settings: any,
+    settings: ClientSettings,
     deletedFiles: Record<string, number>,
     updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>,
     hashCache?: ContentHashCache
   ) {
     this.vault = vault;
+    this.fileManager = fileManager;
     this.pluginDir = pluginDir;
     this.token = token;
     this.settings = settings;
@@ -258,7 +280,7 @@ export class SyncClient {
     const normalizedPath = filePath.replace(/\\/g, "/");
 
     // Built-in ignore rule
-    if (!this.settings.syncBookmarks && normalizedPath === ".obsidian/bookmarks.json") {
+    if (!this.settings.syncBookmarks && normalizedPath === `${this.vault.configDir}/bookmarks.json`) {
       return true;
     }
 
@@ -278,14 +300,14 @@ export class SyncClient {
     while (true) {
       try {
         return await this.internalSync();
-      } catch (e) {
+      } catch (e: unknown) {
         retries--;
         if (retries <= 0) {
           throw e;
         }
         console.warn(`Sync failed, retrying in ${delay}ms... (Remaining retries: ${retries})`, e);
         new Notice(`동기화 실패, ${delay}ms 후 재시도합니다... (남은 재시도: ${retries})`);
-        await new Promise((resolve) => setTimeout(resolve, delay));
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
         delay *= 2;
       }
     }
@@ -355,7 +377,14 @@ export class SyncClient {
       return { file, hash, size, plainHashForCache, cacheable };
     });
 
-    const localFilesMeta: any[] = scanResults.map((r) => ({
+    interface LocalFileMeta {
+      path: string;
+      modified_at_ms: number;
+      size_bytes: number;
+      content_hash: string;
+      is_deleted: boolean;
+    }
+    const localFilesMeta: LocalFileMeta[] = scanResults.map((r) => ({
       path: r.file.path,
       modified_at_ms: r.file.stat.mtime,
       size_bytes: r.size,
@@ -374,11 +403,11 @@ export class SyncClient {
       this.hashCache.setMany(hashCacheEntries);
     }
 
-    // Explicitly include the bookmarks file in sync — .obsidian/bookmarks.json is a config file
+    // Explicitly include the bookmarks file in sync — {configDir}/bookmarks.json is a config file
     // outside the vault index, so it's never picked up as a TFile. The Vault API has no way to
     // reach it at all, so using the Adapter here is unavoidable.
     if (this.settings.syncBookmarks) {
-      const bookmarkPath = ".obsidian/bookmarks.json";
+      const bookmarkPath = `${this.vault.configDir}/bookmarks.json`;
       const exists = await this.vault.adapter.exists(bookmarkPath);
       if (exists) {
         try {
@@ -394,7 +423,7 @@ export class SyncClient {
               is_deleted: false,
             });
           }
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Failed to stat or read bookmarks.json:", e);
         }
       }
@@ -456,7 +485,7 @@ export class SyncClient {
       try {
         const file = this.vault.getAbstractFileByPath(metaPath);
         if (file) {
-          await this.vault.delete(file);
+          await this.fileManager.trashFile(file);
           deleteCount++;
         } else if (await this.vault.adapter.exists(metaPath)) {
           // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
@@ -464,7 +493,7 @@ export class SyncClient {
           await this.vault.adapter.remove(metaPath);
           deleteCount++;
         }
-      } catch (e) {
+      } catch (e: unknown) {
         console.error(`Failed to delete local file ${metaPath}:`, e);
       }
       if (this.deletedFiles[metaPath]) {
@@ -564,7 +593,7 @@ export class SyncClient {
         });
 
         uploadStream.on("end", () => resolve());
-        uploadStream.on("error", (err) => reject(err));
+        uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
       });
     }
 
@@ -662,14 +691,14 @@ export class SyncClient {
               if (this.deletedFiles[currentPath]) {
                 delete this.deletedFiles[currentPath];
               }
-            } catch (e) {
+            } catch (e: unknown) {
               console.error(`Failed to save downloaded file ${eofPath}:`, e);
             }
           }
         });
 
         downloadStream.on("end", () => resolve());
-        downloadStream.on("error", (err) => reject(err));
+        downloadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
       });
     }
 
@@ -689,8 +718,46 @@ export class SyncClient {
     await this.client.ping(request, metadata);
   }
 
+  // fetch()-shaped wrapper around Obsidian's requestUrl -- required instead of fetch() for CORS-free
+  // requests from a plugin, but its response shape (status/json/arrayBuffer already resolved,
+  // throws by default) differs enough from fetch()'s Response that every call site below would
+  // otherwise need rewriting. This adapter keeps them almost unchanged.
+  private async httpFetch(
+    url: string,
+    init?: { method?: string; headers?: Record<string, string>; body?: string | ArrayBuffer }
+  ): Promise<{
+    ok: boolean;
+    status: number;
+    statusText: string;
+    headers: { get(name: string): string | null };
+    text(): Promise<string>;
+    json(): Promise<unknown>;
+    arrayBuffer(): Promise<ArrayBuffer>;
+  }> {
+    const resp = await requestUrl({
+      url,
+      method: init?.method || "GET",
+      headers: init?.headers,
+      body: init?.body,
+      throw: false,
+    });
+    return {
+      ok: resp.status >= 200 && resp.status < 300,
+      status: resp.status,
+      statusText: "",
+      headers: {
+        get: (name: string) => resp.headers[name] ?? resp.headers[name.toLowerCase()] ?? null,
+      },
+      text: async () => resp.text,
+      json: async () => resp.json,
+      arrayBuffer: async () => resp.arrayBuffer,
+    };
+  }
+
   // Helper for making HTTP REST API calls
-  private async requestHttp(method: string, apiPath: string, body?: any, isBinary = false): Promise<any> {
+  private async requestHttp<T = unknown>(method: string, apiPath: string, body?: unknown, isBinary?: false): Promise<T>;
+  private async requestHttp(method: string, apiPath: string, body: unknown, isBinary: true): Promise<ArrayBuffer>;
+  private async requestHttp(method: string, apiPath: string, body?: unknown, isBinary = false): Promise<unknown> {
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}${apiPath}`;
 
@@ -700,7 +767,7 @@ export class SyncClient {
       "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
     };
 
-    const options: RequestInit = {
+    const options: { method: string; headers: Record<string, string>; body?: string } = {
       method: method,
       headers: headers
     };
@@ -710,7 +777,7 @@ export class SyncClient {
       headers["Content-Type"] = "application/json";
     }
 
-    const response = await fetch(url, options);
+    const response = await this.httpFetch(url, options);
     if (!response.ok) {
       const errText = await response.text();
       throw new Error(`HTTP Request failed: ${response.status} ${response.statusText}\n${errText}`);
@@ -724,12 +791,12 @@ export class SyncClient {
   }
 
   // Fetch the backup version history for a given file (via the HTTP REST API)
-  public async getFileHistory(filePath: string): Promise<any[]> {
+  public async getFileHistory(filePath: string): Promise<HistoryVersionEntry[]> {
     const vaultId = this.vault.getName();
     const encodedPath = encodeURIComponent(filePath);
     const path = `/api/history?vault_id=${encodeURIComponent(vaultId)}&path=${encodedPath}`;
 
-    const res = await this.requestHttp("GET", path);
+    const res = await this.requestHttp<{ versions?: HistoryVersionEntry[] }>("GET", path);
     return res.versions || [];
   }
 
@@ -774,7 +841,7 @@ export class SyncClient {
       "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
     };
 
-    const response = await fetch(downloadUrl, { method: "GET", headers });
+    const response = await this.httpFetch(downloadUrl, { method: "GET", headers });
     if (!response.ok) {
       throw new Error(`HTTP Download failed: ${response.status} ${response.statusText}`);
     }
@@ -826,16 +893,17 @@ export class SyncClient {
     // not required for the modal to function (callers already fall back to the local settings-based
     // guess on any failure). Without a timeout, a slow or unreachable network stalls the whole
     // Publish modal for as long as the platform's own connection timeout (which can be tens of
-    // seconds), even though nothing else here depends on this call succeeding.
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    // seconds), even though nothing else here depends on this call succeeding. requestUrl has no
+    // AbortSignal support, so this races it against a timeout instead of truly cancelling it --
+    // enough to stop it from blocking the caller, even if the underlying request lingers.
+    const timeoutPromise = new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3000));
     try {
-      const response = await fetch(url, { headers: { "obs-token": this.token }, signal: controller.signal });
-      if (!response.ok) return null;
+      const response = await Promise.race([this.httpFetch(url, { headers: { "obs-token": this.token } }), timeoutPromise]);
+      if (!response || !response.ok) return null;
       const info = (await response.json()) as { username: string | null };
       return info.username;
-    } finally {
-      clearTimeout(timeout);
+    } catch {
+      return null;
     }
   }
 
@@ -852,7 +920,7 @@ export class SyncClient {
     const hash = await this.computeHash(data);
 
     const url = `${this.getPublishHost()}/api/upload`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: {
         "obs-token": this.token,
@@ -872,7 +940,7 @@ export class SyncClient {
   public async unpublishFile(filePath: string): Promise<void> {
     const siteId = this.vault.getName();
     const url = `${this.getPublishHost()}/api/remove`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: filePath, id: siteId, token: this.token }),
@@ -887,7 +955,7 @@ export class SyncClient {
     const vaultId = this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${this.token}`,
@@ -895,8 +963,8 @@ export class SyncClient {
       },
     });
     if (!response.ok) return [];
-    const res = await response.json();
-    return (res.files || []).map((f: any) => f.path as string);
+    const res = (await response.json()) as { files?: { path: string }[] };
+    return (res.files || []).map((f) => f.path);
   }
 
   /** Returns the full /api/list response (path + hash included). Used by PublishModal. */
@@ -904,7 +972,7 @@ export class SyncClient {
     const vaultId = this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "GET",
       headers: {
         "Authorization": `Bearer ${this.token}`,
@@ -912,15 +980,15 @@ export class SyncClient {
       },
     });
     if (!response.ok) return [];
-    const res = await response.json();
+    const res = (await response.json()) as { files?: { path: string; hash: string }[] };
     return res.files || [];
   }
 
   // apiPostBackend convention: body automatically includes {id, token}
-  private async postToBackend(endpoint: string, body: object): Promise<any> {
+  private async postToBackend<T = unknown>(endpoint: string, body: object): Promise<T> {
     const siteId = this.vault.getName();
     const url = `${this.getPublishHost()}/${endpoint}`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: siteId, token: this.token, ...body }),
@@ -929,13 +997,13 @@ export class SyncClient {
       const errText = await response.text();
       throw new Error(`${endpoint} failed: ${response.status}\n${errText}`);
     }
-    return response.json();
+    return (await response.json()) as T;
   }
 
   // apiPostFrontend convention: body automatically includes {token}
-  private async postToFrontend(endpoint: string, body: object): Promise<any> {
+  private async postToFrontend<T = unknown>(endpoint: string, body: object): Promise<T> {
     const url = `${this.getPublishHost()}/${endpoint}`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: this.token, ...body }),
@@ -944,14 +1012,14 @@ export class SyncClient {
       const errText = await response.text();
       throw new Error(`${endpoint} failed: ${response.status}\n${errText}`);
     }
-    return response.json();
+    return (await response.json()) as T;
   }
 
   // Download: POST /api/download with {id, token, path} → binary
   public async downloadPublishedFile(filePath: string): Promise<ArrayBuffer> {
     const siteId = this.vault.getName();
     const url = `${this.getPublishHost()}/api/download`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id: siteId, token: this.token, path: filePath }),
@@ -965,7 +1033,7 @@ export class SyncClient {
 
   // Password: GET
   public async getPasswords(): Promise<{ name: string }[]> {
-    const res = await this.postToBackend("api/password", {});
+    const res = await this.postToBackend<{ pass?: { name: string }[] }>("api/password", {});
     return res.pass || [];
   }
 
@@ -982,7 +1050,7 @@ export class SyncClient {
   // Slug: GET slugs map
   public async getSlugs(): Promise<Record<string, string>> {
     const vaultName = this.vault.getName();
-    const res = await this.postToFrontend("api/slugs", { ids: [vaultName] });
+    const res = await this.postToFrontend<Record<string, string>>("api/slugs", { ids: [vaultName] });
     return res;
   }
 
@@ -995,14 +1063,14 @@ export class SyncClient {
 
   // Slug: CHECK slug
   public async checkSlug(slug: string): Promise<{ id: string; slug: string; host: string }> {
-    return this.postToFrontend("api/site", { slug });
+    return this.postToFrontend<{ id: string; slug: string; host: string }>("api/site", { slug });
   }
 
   // Share: LIST
   public async getShares(): Promise<{ uid: string; email: string; name: string; accepted: boolean }[]> {
     const vaultName = this.vault.getName();
     const url = `${this.getPublishHost()}/publish/share/list`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: this.token, site_uid: vaultName }),
@@ -1011,7 +1079,7 @@ export class SyncClient {
       const errText = await response.text();
       throw new Error(`share/list failed: ${response.status}\n${errText}`);
     }
-    const res = await response.json();
+    const res = (await response.json()) as { shares?: { uid: string; email: string; name: string; accepted: boolean }[] };
     return res.shares || [];
   }
 
@@ -1019,7 +1087,7 @@ export class SyncClient {
   public async inviteShare(email: string): Promise<void> {
     const vaultName = this.vault.getName();
     const url = `${this.getPublishHost()}/publish/share/invite`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: this.token, site_uid: vaultName, email }),
@@ -1034,7 +1102,7 @@ export class SyncClient {
   public async removeShare(shareUid: string): Promise<void> {
     const vaultName = this.vault.getName();
     const url = `${this.getPublishHost()}/publish/share/remove`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: this.token, site_uid: vaultName, share_uid: shareUid }),
@@ -1048,7 +1116,7 @@ export class SyncClient {
   // Share: ACCEPT
   public async acceptShare(code: string): Promise<void> {
     const url = `${this.getPublishHost()}/publish/share/accept`;
-    const response = await fetch(url, {
+    const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token: this.token, code }),

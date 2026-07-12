@@ -4,6 +4,7 @@ import type { LocalSnapshot } from "./localSnapshotStore";
 import { t } from "./i18n";
 import { renderDiff } from "./diffView";
 import { enableSwipeNavigation } from "./swipeNavigation";
+import { errorMessage } from "./errorMessage";
 
 const DIFF_TOGGLE_STORAGE_KEY = "history-show-diff";
 
@@ -81,7 +82,7 @@ export class LocalSnapshotModal extends Modal {
   private restoreButton!: ButtonComponent;
   private swipeCleanup: (() => void) | null = null;
 
-  private diffOn = !!localStorage.getItem(DIFF_TOGGLE_STORAGE_KEY);
+  private diffOn = false;
   private currentIndex = 0;
   private currentPath = "";
 
@@ -107,6 +108,7 @@ export class LocalSnapshotModal extends Modal {
   ) {
     super(app);
     this.modalEl.addClass(this.isDesktop ? "grpc-history-modal-desktop" : "grpc-history-modal-mobile");
+    this.diffOn = !!this.app.loadLocalStorage(DIFF_TOGGLE_STORAGE_KEY);
   }
 
   async onOpen() {
@@ -171,11 +173,11 @@ export class LocalSnapshotModal extends Modal {
     const actionBarEl = contentPaneEl.createDiv("grpc-preview-actionbar");
     this.copyButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("interface.label-copy-short", "Copy"))
-      .onClick(() => this.copyActiveSnapshot());
+      .onClick(() => void this.copyActiveSnapshot());
     this.restoreButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("plugins.sync.label-restore-this-version", "Restore this version"))
       .setCta()
-      .onClick(() => this.restoreActiveSnapshot());
+      .onClick(() => void this.restoreActiveSnapshot());
 
     this.scope.register(null, "ArrowUp", () => {
       this.navigateBy(-1);
@@ -211,11 +213,11 @@ export class LocalSnapshotModal extends Modal {
     const actionBarEl = previewScreenEl.createDiv("grpc-preview-actionbar");
     this.copyButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("interface.label-copy-short", "Copy"))
-      .onClick(() => this.copyActiveSnapshot());
+      .onClick(() => void this.copyActiveSnapshot());
     this.restoreButton = new ButtonComponent(actionBarEl)
       .setButtonText(t("plugins.sync.label-restore-this-version", "Restore this version"))
       .setCta()
-      .onClick(() => this.restoreActiveSnapshot());
+      .onClick(() => void this.restoreActiveSnapshot());
 
     this.swipeCleanup = enableSwipeNavigation(this.previewBodyEl, {
       onPrev: () => this.navigateBy(-1),
@@ -230,8 +232,7 @@ export class LocalSnapshotModal extends Modal {
     setTooltip(diffBtn, t("plugins.sync.label-show-diff", "Show diff"));
     diffBtn.addEventListener("click", () => {
       this.diffOn = !this.diffOn;
-      if (this.diffOn) localStorage.setItem(DIFF_TOGGLE_STORAGE_KEY, "true");
-      else localStorage.removeItem(DIFF_TOGGLE_STORAGE_KEY);
+      this.app.saveLocalStorage(DIFF_TOGGLE_STORAGE_KEY, this.diffOn ? true : null);
       diffBtn.toggleClass("is-active", this.diffOn);
       this.applyToggleState();
     });
@@ -371,8 +372,8 @@ export class LocalSnapshotModal extends Modal {
     try {
       await navigator.clipboard.writeText(this.activeSnapshot.data);
       new Notice(t("interface.copied_generic", "Copied to clipboard"));
-    } catch (e: any) {
-      new Notice(`복사 실패: ${e?.message ?? String(e)}`);
+    } catch (e: unknown) {
+      new Notice(`복사 실패: ${errorMessage(e)}`);
     }
   }
 
@@ -411,8 +412,8 @@ export class LocalSnapshotModal extends Modal {
       this.snapshots.forEach((s, index) => this.renderCard(s, index));
       this.selectIndex(0);
       if (!this.isDesktop) this.mobileLayoutEl.addClass("is-preview");
-    } catch (e: any) {
-      new Notice(`버전 복원 실패: ${e?.message ?? String(e)}`);
+    } catch (e: unknown) {
+      new Notice(`버전 복원 실패: ${errorMessage(e)}`);
     }
   }
 }

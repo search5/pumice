@@ -17,6 +17,9 @@ export async function loadToken(app: App): Promise<string> {
   const secret = app.secretStorage.getSecret(SECRET_ID);
   if (secret) return secret;
 
+  // Deliberately raw localStorage, not App#loadLocalStorage: the legacy value was written by raw
+  // localStorage.setItem() (see git history), which App#saveLocalStorage's vault-scoped key isn't
+  // guaranteed to read back -- this has to match the exact mechanism the old code wrote with.
   const legacy = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
   if (legacy) {
     app.secretStorage.setSecret(SECRET_ID, legacy);
