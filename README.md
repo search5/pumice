@@ -1,12 +1,14 @@
 # Pumice
 
-An Obsidian community plugin that syncs your vault with a self-hosted gRPC server.
+An Obsidian community plugin that syncs your vault with a self-hosted gRPC server
+([pumice-server](https://github.com/search5/pumice-server) — required, run it yourself).
 The goal is to sync instantly, no matter how many files are in the vault.
 
 ## Overview
 
 - **Client**: TypeScript, Obsidian community plugin (this repository)
-- **Server**: Python (`asyncioreactor` + `grpc.aio` + `Twisted`, separate repo / phase 2)
+- **Server**: Python (`asyncioreactor` + `grpc.aio` + `Twisted`), see
+  [pumice-server](https://github.com/search5/pumice-server)
 - **Transport**: gRPC-Web (HTTP/2 multiplexing, bidirectional streaming) — many files are sent
   concurrently over a single connection instead of one RPC per file
 - **Auth**: a static token stored in the OS keychain (macOS Keychain / Windows Credential
