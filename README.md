@@ -186,6 +186,11 @@ pumice/
 
 Please use GitHub Issues to report bugs or suggest features.
 
+## Support
+
+If you'd like to sponsor this project, reach out at search5@gmail.com. Sponsorships make a real
+difference in how much time can go into development.
+
 ## License
 
 [BSD 3-Clause License](LICENSE)
