@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, ButtonComponent, Notice } from "obsidian";
 import type SyncPlugin from "./main";
-import { deleteToken } from "./tokenStore";
+import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { t } from "./i18n";
 
@@ -305,10 +305,10 @@ export class SyncSettingTab extends PluginSettingTab {
         .addText((text) => {
           text
             .setPlaceholder(t("settings.placeholder-enter-password", "Enter password"))
-            .setValue(this.plugin.settings.e2eePassword || "")
+            .setValue(this.plugin.e2eePassword || "")
             .onChange(async (value) => {
-              this.plugin.settings.e2eePassword = value;
-              await this.plugin.saveSettings();
+              this.plugin.e2eePassword = value;
+              await saveE2eePassword(this.app, value);
             });
           text.inputEl.type = "password";
           text.inputEl.autocomplete = "off";

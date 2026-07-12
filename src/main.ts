@@ -1,7 +1,7 @@
 import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { DEFAULT_SETTINGS, type SyncPluginSettings } from "./settings";
-import { loadToken, hasToken, saveToken } from "./tokenStore";
+import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient } from "./syncClient";
 import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
@@ -47,6 +47,8 @@ const pathUtil = {
 export default class SyncPlugin extends Plugin {
   declare settings: SyncPluginSettings;
   hasStoredToken = false;
+  /** E2EE sync password, cached in memory from app.secretStorage -- never persisted to data.json. */
+  e2eePassword = "";
   deletedFiles: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
@@ -301,7 +303,7 @@ export default class SyncPlugin extends Plugin {
       this.app.vault,
       pluginDir,
       token,
-      this.settings,
+      { ...this.settings, e2eePassword: this.e2eePassword },
       this.deletedFiles,
       async (deleted) => {
         this.deletedFiles = deleted;
@@ -327,6 +329,17 @@ export default class SyncPlugin extends Plugin {
     const data = await this.loadData() || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings || data);
     this.deletedFiles = data.deletedFiles || {};
+
+    // One-time migration: e2eePassword used to be persisted in plaintext here. Move any leftover
+    // value into secretStorage (same treatment as the auth token in tokenStore.ts) and never write
+    // it back to data.json.
+    const legacyPassword = (this.settings as any).e2eePassword;
+    delete (this.settings as any).e2eePassword;
+    if (legacyPassword) {
+      await saveE2eePassword(this.app, legacyPassword);
+      await this.savePluginData();
+    }
+    this.e2eePassword = await loadE2eePassword(this.app);
   }
 
   async saveSettings(): Promise<void> {
@@ -357,7 +370,7 @@ export default class SyncPlugin extends Plugin {
       this.app.vault,
       pluginDir,
       token,
-      this.settings,
+      { ...this.settings, e2eePassword: this.e2eePassword },
       this.deletedFiles,
       async (deleted) => {
         this.deletedFiles = deleted;
@@ -383,7 +396,7 @@ export default class SyncPlugin extends Plugin {
         this.app.vault,
         pluginDir,
         token,
-        this.settings,
+        { ...this.settings, e2eePassword: this.e2eePassword },
         this.deletedFiles,
         async (deleted) => {
           this.deletedFiles = deleted;
