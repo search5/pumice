@@ -4,6 +4,7 @@ import { SyncClient } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
+import { errorMessage } from "./errorMessage";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -167,8 +168,8 @@ abstract class ModalSection {
     this.el = modal.contentEl.createDiv();
     this.el.hide();
   }
-  show() { (this.el as any).show(); }
-  hide() { (this.el as any).hide(); }
+  show() { this.el.show(); }
+  hide() { this.el.hide(); }
 }
 
 // ─── Publish file tree (folder/file nodes) ───────────────────────────────────
@@ -260,7 +261,7 @@ class PublishFileNode {
 
     const innerEl = this.el.createDiv("tree-item-self");
 
-    this.checkboxEl = innerEl.createEl("input", { type: "checkbox" }) as HTMLInputElement;
+    this.checkboxEl = innerEl.createEl("input", { type: "checkbox" });
     this.checkboxEl.addClass("file-tree-item-checkbox");
     this.checkboxEl.checked = diff.checked;
     this.checkboxEl.addEventListener("change", () => {
@@ -286,7 +287,7 @@ class PublishFileNode {
   filter(query: string): boolean {
     const q = query.toLowerCase();
     const match = !query || this.diff.checked || this.diff.path.toLowerCase().includes(q);
-    (this.el as any).toggle(match);
+    this.el.toggle(match);
     return match;
   }
 
@@ -314,7 +315,7 @@ class PublishFolderNode {
     const collapseIconEl = selfEl.createDiv("tree-item-icon collapse-icon");
     setIcon(collapseIconEl, "right-triangle");
 
-    this.checkboxEl = selfEl.createEl("input", { type: "checkbox" }) as HTMLInputElement;
+    this.checkboxEl = selfEl.createEl("input", { type: "checkbox" });
     this.checkboxEl.addClass("file-tree-item-checkbox");
     this.checkboxEl.addEventListener("click", (e) => e.stopPropagation());
     this.checkboxEl.addEventListener("change", () => this.setCheckedRecursive(this.checkboxEl.checked));
@@ -363,7 +364,7 @@ class PublishFolderNode {
     for (const child of this.children) {
       if (child.filter(query)) anyVisible = true;
     }
-    (this.el as any).toggle(anyVisible);
+    this.el.toggle(anyVisible);
     // If a match is inside a collapsed folder it won't be visible, so auto-expand on a match.
     if (query && anyVisible && this.collapsed) this.toggleCollapse();
     return anyVisible;
@@ -372,7 +373,7 @@ class PublishFolderNode {
   private toggleCollapse() {
     this.collapsed = !this.collapsed;
     this.el.toggleClass("is-collapsed", this.collapsed);
-    (this.childrenEl as any).toggle(!this.collapsed);
+    this.childrenEl.toggle(!this.collapsed);
   }
 }
 
@@ -428,11 +429,11 @@ class FileSection {
 
     if (startCollapsed) {
       this.outerEl.addClass("is-collapsed");
-      (this.childrenEl as any).hide();
+      this.childrenEl.hide();
     }
 
     this.updateChecked();
-    if (this.focusedNode) setTimeout(() => this.focusedNode!.scrollIntoView(), 100);
+    if (this.focusedNode) window.setTimeout(() => this.focusedNode!.scrollIntoView(), 100);
   }
 
   private rebuildTree() {
@@ -454,7 +455,7 @@ class FileSection {
     for (const node of this.roots) {
       if (node.filter(query)) anyVisible = true;
     }
-    (this.outerEl as any).toggle(anyVisible);
+    this.outerEl.toggle(anyVisible);
   }
 
   // Entry point used when something outside this class (e.g. "include linked files") wants to check
@@ -483,7 +484,7 @@ class FileSection {
   private toggleCollapse() {
     this.collapsed = !this.collapsed;
     this.outerEl.toggleClass("is-collapsed", this.collapsed);
-    (this.childrenEl as any).toggle(!this.collapsed);
+    this.childrenEl.toggle(!this.collapsed);
   }
 }
 
@@ -534,7 +535,7 @@ class ReviewChangesSection extends ModalSection {
       this.searchInput = searchContainer.createEl("input", {
         type: "text",
         placeholder: t("setting.hotkeys.prompt-filter", "Search files..."),
-      }) as HTMLInputElement;
+      });
       this.searchInput.addClass("search-input");
       this.searchInput.addEventListener("input", () => {
         const q = this.searchInput.value;
@@ -554,14 +555,14 @@ class ReviewChangesSection extends ModalSection {
       cls: "publish-no-changes u-muted",
       text: t("plugins.publish.label-no-changes-detected", "No changes detected."),
     });
-    (this.noChangesEl as any).hide();
+    this.noChangesEl.hide();
 
     this.sectionsContainer = this.el.createDiv("publish-sections-container");
 
     // Buttons
     const buttonContainer = this.el.createDiv("modal-button-container");
     buttonContainer.createEl("button", { cls: "mod-cta", text: t("plugins.publish.button-publish", "Publish") })
-      .addEventListener("click", () => modal.startUpload());
+      .addEventListener("click", () => void modal.startUpload());
     buttonContainer.createEl("button", { text: t("dialogue.button-cancel", "Cancel") })
       .addEventListener("click", () => modal.close());
   }
@@ -583,9 +584,9 @@ class ReviewChangesSection extends ModalSection {
     const focusPath = focusFile?.path;
     const hasChanges = diffs.length > 0;
     if (hasChanges) {
-      (this.noChangesEl as any).hide();
+      this.noChangesEl.hide();
     } else {
-      (this.noChangesEl as any).show();
+      this.noChangesEl.show();
     }
 
     if (changed.length > 0) {
@@ -669,10 +670,10 @@ class SiteOptionsSection extends ModalSection {
       this.slugInput = el.createEl("input", {
         type: "text",
         placeholder: t("plugins.publish.option-site-id-placeholder", "my-site"),
-      }) as HTMLInputElement;
+      });
       this.slugInput.addClass("setting-input");
       const saveBtn = el.createEl("button", { cls: "mod-cta", text: t("dialogue.button-save", "Save") });
-      saveBtn.addEventListener("click", () => this.saveSlug());
+      saveBtn.addEventListener("click", () => void this.saveSlug());
     });
 
     // Password management
@@ -687,26 +688,28 @@ class SiteOptionsSection extends ModalSection {
       const nameInput = el.createEl("input", {
         type: "text",
         placeholder: t("plugins.publish.option-nickname-name", "Name"),
-      }) as HTMLInputElement;
+      });
       nameInput.addClass("setting-input");
       const pwInput = el.createEl("input", {
         type: "password",
         placeholder: t("plugins.publish.option-password-placeholder", "Password"),
-      }) as HTMLInputElement;
+      });
       pwInput.addClass("setting-input");
       const addBtn = el.createEl("button", { text: t("plugins.publish.action-add-password", "Add") });
-      addBtn.addEventListener("click", async () => {
-        if (!nameInput.value || !pwInput.value) return;
-        try {
-          const client = await modal.plugin.getSyncClient();
-          await client.addPassword(nameInput.value, pwInput.value);
-          nameInput.value = "";
-          pwInput.value = "";
-          await this.loadPasswords();
-          new Notice(t("plugins.publish.msg-added-new-password", "Password added."));
-        } catch (e: any) {
-          new Notice(`오류: ${e.message}`);
-        }
+      addBtn.addEventListener("click", () => {
+        void (async () => {
+          if (!nameInput.value || !pwInput.value) return;
+          try {
+            const client = await modal.plugin.getSyncClient();
+            await client.addPassword(nameInput.value, pwInput.value);
+            nameInput.value = "";
+            pwInput.value = "";
+            await this.loadPasswords();
+            new Notice(t("plugins.publish.msg-added-new-password", "Password added."));
+          } catch (e: unknown) {
+            new Notice(`오류: ${errorMessage(e)}`);
+          }
+        })();
       });
     });
 
@@ -758,8 +761,8 @@ class SiteOptionsSection extends ModalSection {
       const client = await this.modal.plugin.getSyncClient();
       await client.setSlug(this.slugInput.value.trim());
       new Notice(t("plugins.publish.msg-updated-options", "Slug saved."));
-    } catch (e: any) {
-      new Notice(`오류: ${e.message}`);
+    } catch (e: unknown) {
+      new Notice(`오류: ${errorMessage(e)}`);
     }
   }
 
@@ -779,9 +782,11 @@ class SiteOptionsSection extends ModalSection {
         const row = this.passwordListEl.createDiv("setting-item");
         row.createDiv({ cls: "setting-item-info", text: p.name });
         const delBtn = row.createEl("button", { cls: "mod-warning", text: t("dialogue.button-delete", "Delete") });
-        delBtn.addEventListener("click", async () => {
-          await client.deletePassword(p.name);
-          await this.loadPasswords();
+        delBtn.addEventListener("click", () => {
+          void (async () => {
+            await client.deletePassword(p.name);
+            await this.loadPasswords();
+          })();
         });
       }
     } catch { /* ignore */ }
@@ -812,9 +817,11 @@ class SiteOptionsSection extends ModalSection {
           cls: "mod-warning",
           text: t("plugins.publish.tooltip-remove-user", "Remove"),
         });
-        delBtn.addEventListener("click", async () => {
-          await client.removeShare(s.uid);
-          await this.loadShares();
+        delBtn.addEventListener("click", () => {
+          void (async () => {
+            await client.removeShare(s.uid);
+            await this.loadShares();
+          })();
         });
       }
     } catch { /* ignore */ }
@@ -860,12 +867,12 @@ class ManageFoldersModal extends Modal {
   }
 
   private getFolders(): string[] {
-    return (this.plugin.settings[this.settingsKey] as string)
+    return this.plugin.settings[this.settingsKey]
       .split("\n").map(p => p.trim()).filter(Boolean);
   }
 
   private async saveFolders(folders: string[]) {
-    (this.plugin.settings as any)[this.settingsKey] = folders.join("\n");
+    this.plugin.settings[this.settingsKey] = folders.join("\n");
     await this.plugin.saveSettings();
   }
 
@@ -878,7 +885,7 @@ class ManageFoldersModal extends Modal {
       this.folderInput = text.inputEl;
       new FolderSuggest(this.app, this.folderInput);
       text.inputEl.addEventListener("keydown", e => {
-        if (e.key === "Enter") this.addFolder();
+        if (e.key === "Enter") void this.addFolder();
       });
     }).addButton(btn => btn.setButtonText(t("interface.button-add", "Add")).onClick(() => this.addFolder()));
 
@@ -897,9 +904,11 @@ class ManageFoldersModal extends Modal {
       const row = this.listEl.createDiv("setting-item");
       row.createDiv({ cls: "setting-item-info", text: f });
       const delBtn = row.createEl("button", { cls: "mod-warning", text: t("dialogue.button-delete", "Delete") });
-      delBtn.addEventListener("click", async () => {
-        await this.saveFolders(this.getFolders().filter(x => x !== f));
-        this.renderList();
+      delBtn.addEventListener("click", () => {
+        void (async () => {
+          await this.saveFolders(this.getFolders().filter(x => x !== f));
+          this.renderList();
+        })();
       });
     }
   }
@@ -1020,7 +1029,7 @@ class SiteFiltersSection extends ModalSection {
   ): DocumentFragment {
     return createFragment(el => {
       el.appendText(descText);
-      const folders = ((this.modal.plugin.settings as any)[key] as string)
+      const folders = this.modal.plugin.settings[key]
         .split("\n").map((p: string) => p.trim()).filter(Boolean);
       if (folders.length > 0) {
         el.appendText(currentlyText);
@@ -1050,13 +1059,13 @@ class UploadProgressSection extends ModalSection {
       siteLinkEl = el.createEl("a");
       siteLinkEl.setAttribute("target", "_blank");
     });
-    (successEl as any).hide();
+    successEl.hide();
 
     const buttonContainer = this.el.createDiv("modal-button-container");
     const doneBtn = buttonContainer.createEl("button", {
       cls: "mod-cta mod-warning",
       text: t("plugins.publish.button-stop", "Cancel"),
-    }) as HTMLButtonElement;
+    });
     doneBtn.addEventListener("click", () => this.modal.close());
 
     const checkedDiffs = diffs.filter(d => d.checked);
@@ -1080,7 +1089,7 @@ class UploadProgressSection extends ModalSection {
       pathToInfo.set(diff.path, { el: itemEl, flairEl });
     }
 
-    (this.el as any).show();
+    this.el.show();
 
     for (const diff of checkedDiffs) {
       const info = pathToInfo.get(diff.path);
@@ -1098,7 +1107,7 @@ class UploadProgressSection extends ModalSection {
           if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
           info.flairEl.setText(t("plugins.publish.label-status-published", "Published"));
         }
-      } catch (e: any) {
+      } catch {
         info.flairEl.setText(t("plugins.publish.label-status-failed", "Failed"));
         info.el.addClass("mod-error");
       }
@@ -1117,7 +1126,7 @@ class UploadProgressSection extends ModalSection {
     const viewUrl = focusPath ? `${this.modal.siteUrl}${focusPath}` : this.modal.siteUrl;
     siteLinkEl.setText(viewUrl);
     siteLinkEl.setAttribute("href", viewUrl);
-    (successEl as any).show();
+    successEl.show();
   }
 }
 
@@ -1165,11 +1174,11 @@ export class PublishModal extends Modal {
 
     contentEl.createDiv("message-container", el => {
       this.errorMessageEl = el.createDiv("message mod-error");
-      (this.errorMessageEl as any).hide();
+      this.errorMessageEl.hide();
     });
 
     this.loaderEl = contentEl.createEl("div", { cls: "loading-spinner" });
-    (this.loaderEl as any).show();
+    this.loaderEl.show();
 
     let client: SyncClient | null = null;
     try {
@@ -1203,15 +1212,15 @@ export class PublishModal extends Modal {
       const msRender = Math.round(performance.now() - tRender);
       console.log(`[pumice diag] setDiffs render (${diffs.length} diffs): ${msRender}ms`);
       new Notice(`[diag] render:${msRender}ms for ${diffs.length} diffs`);
-    } catch (e: any) {
+    } catch (e: unknown) {
       this.showError(
         t("plugins.publish.msg-load-changes-failed", "Failed to load changes: {{error}}", {
-          error: e?.message ?? String(e),
+          error: errorMessage(e),
         })
       );
     }
 
-    (this.loaderEl as any).hide();
+    this.loaderEl.hide();
     this.openSection(this.reviewChangesSection);
   }
 
@@ -1219,12 +1228,12 @@ export class PublishModal extends Modal {
     this.currentSection?.hide();
     this.currentSection = section;
     section.show();
-    if (section instanceof SiteOptionsSection) section.load();
+    if (section instanceof SiteOptionsSection) void section.load();
   }
 
   showError(msg: string) {
     this.errorMessageEl.setText(msg);
-    (this.errorMessageEl as any).show();
+    this.errorMessageEl.show();
   }
 
   async startUpload() {

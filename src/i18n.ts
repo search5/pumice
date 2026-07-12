@@ -10,7 +10,7 @@ const locales: Record<string, Record<string, string>> = { ko, en };
 // Generic dispatch over whatever locales are registered above — adding a new locale file to the
 // `locales` map is enough on its own; nothing here needs to change.
 function detectLanguage(): string {
-  const lang = document.documentElement.lang?.toLowerCase() ?? "";
+  const lang = activeDocument.documentElement.lang?.toLowerCase() ?? "";
   for (const code of Object.keys(locales)) {
     if (lang.startsWith(code)) return code;
   }
