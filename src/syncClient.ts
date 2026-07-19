@@ -3,13 +3,24 @@ import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
 import { TFile, Vault, FileManager, Notice, requestUrl } from "obsidian";
 import { ContentHashCache } from "./contentHashCache";
-import { mapWithConcurrency } from "./concurrency";
+import { mapWithConcurrency, streamWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
+import { t } from "./i18n";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
 // runtime shape of the settings object this class works with.
 type ClientSettings = SyncPluginSettings & { e2eePassword: string };
+
+// Reported by internalSync() so callers (main.ts's syncNow()) can show progress instead of just a
+// start/end Notice -- "done" counts items processed within the current phase, not overall.
+export type SyncProgressPhase = "scan" | "upload" | "download";
+export type SyncProgressCallback = (info: { phase: SyncProgressPhase; done: number; total: number }) => void;
+
+// Reported by sync() on each retry after a failed internalSync() attempt, so callers can fold the
+// retry status into their own UI (e.g. main.ts's syncNow() updates its progress Notice in place)
+// instead of a separate hardcoded Notice popping up on top of it.
+export type SyncRetryCallback = (info: { delayMs: number; retriesLeft: number }) => void;
 
 // Shape of a single /api/history entry, as returned by the server. Structurally compatible with
 // syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
@@ -124,6 +135,112 @@ function getMetadata(token: string, settings: ClientSettings): grpcWeb.Metadata 
   };
 }
 
+// ─── Streaming upload (#4_옵션B_구현_계획.md 설계 B) ─────────────────────────────────
+//
+// Envelope wire format matches pumice-server's EnvelopeStreamParser (streaming.py) exactly:
+// 1 byte flags (bit 0x80 = trailer, no payload) + 4 bytes big-endian payload length + payload.
+// Sent as raw bytes (not base64) -- confirmed against the server, which does not base64-decode
+// this endpoint's body the way the gRPC-Web-text resource does for UploadFiles.
+
+export function encodeEnvelopeFrame(payload: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(5 + payload.length);
+  new DataView(frame.buffer).setUint32(1, payload.length, false);
+  frame.set(payload, 5);
+  return frame;
+}
+
+// Incrementally parses enveloped frames out of a fetch() response body stream, calling onFrame
+// once per complete frame as soon as its bytes have all arrived -- mirrors the incremental
+// parsing EnvelopeStreamParser does server-side, just for the response direction instead of the
+// request direction. Doesn't assume a stream chunk boundary lines up with a frame boundary.
+export async function readEnvelopedResponses(
+  body: ReadableStream<Uint8Array>,
+  onFrame: (flags: number, payload: Uint8Array) => void
+): Promise<void> {
+  const reader = body.getReader();
+  let buffer = new Uint8Array(0);
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (value && value.length > 0) {
+      const merged = new Uint8Array(buffer.length + value.length);
+      merged.set(buffer, 0);
+      merged.set(value, buffer.length);
+      buffer = merged;
+    }
+
+    while (buffer.length >= 5) {
+      const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+      const flags = view.getUint8(0);
+      const length = view.getUint32(1, false);
+      const frameEnd = 5 + length;
+      if (buffer.length < frameEnd) break; // wait for more bytes
+      onFrame(flags, buffer.slice(5, frameEnd));
+      buffer = buffer.slice(frameEnd);
+    }
+
+    if (done) break;
+  }
+}
+
+// fetch()'s streaming request bodies (ReadableStream + duplex: 'half') require HTTP/2 + HTTPS --
+// Chrome docs: "The fetch will be rejected if the connection is HTTP/1.x." pumice-server itself
+// only ever speaks plain HTTP/1.1 (see #4_옵션B_구현_계획.md); TLS+HTTP/2 has to come from a
+// reverse proxy in front of it. If the user hasn't configured TLS, the actual connection can't be
+// HTTP/2 regardless of what the browser API itself supports, so skip straight to the
+// non-streaming fallback instead of attempting (and always failing) the duplex feature-detection.
+export function supportsStreamingUpload(settings: ClientSettings): boolean {
+  if (!settings.useTls) return false;
+
+  // Standard feature-detection pattern from Chrome's documentation: construct a Request with a
+  // stream body and check whether `duplex` is actually read (vs. silently ignored, which is what
+  // happens in browsers that don't support streaming request bodies at all).
+  let duplexAccessed = false;
+  new Request("https://example.com", {
+    method: "POST",
+    body: new ReadableStream(),
+    // @ts-ignore -- duplex is not yet in the TS lib.dom fetch types
+    get duplex() {
+      duplexAccessed = true;
+      return "half";
+    },
+  });
+  return duplexAccessed;
+}
+
+// Splits needUploadList into batches bounded by both byte size and file count -- byte size alone
+// isn't enough of a cap: a real vault is dominated by many small notes, so a byte-only cap lets one
+// batch swallow nearly the whole file list before it fills up (confirmed against realistic-size
+// synthetic data in #4_구현_계획.md -- a byte-only version put 95%+ of files in a single batch).
+// A file larger than targetBytes on its own still gets its own batch rather than being skipped.
+function groupIntoBatches(
+  paths: string[],
+  sizeOf: (path: string) => number,
+  targetBytes: number,
+  maxFiles: number
+): string[][] {
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let currentBytes = 0;
+  for (const path of paths) {
+    const size = sizeOf(path);
+    if (current.length > 0 && (currentBytes + size > targetBytes || current.length >= maxFiles)) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(path);
+    currentBytes += size;
+    if (currentBytes > targetBytes || current.length >= maxFiles) {
+      batches.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
 export class SyncClient {
   private client: SyncServiceClient;
   private vault: Vault;
@@ -134,6 +251,9 @@ export class SyncClient {
   private deletedFiles: Record<string, number>;
   private updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>;
   private hashCache?: ContentHashCache;
+  private onProgress?: SyncProgressCallback;
+  private onRetry?: SyncRetryCallback;
+  private lastProgressReportAt = 0;
   private e2eeKeyCache: CryptoKey | null = null;
 
   private async getE2eeKey(): Promise<CryptoKey> {
@@ -230,15 +350,15 @@ export class SyncClient {
     return sha256(new TextEncoder().encode(password).buffer);
   }
 
-  private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer): Promise<{ size: number; hash: string }> {
+  private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer): Promise<{ size: number; hash: string; buffer: ArrayBuffer }> {
     if (this.settings.enableE2EE && this.settings.e2eePassword) {
       const key = await this.getE2eeKey();
       const encrypted = await this.encryptData(arrayBuffer, key);
       const hash = await sha256(encrypted);
-      return { size: encrypted.byteLength, hash: hash };
+      return { size: encrypted.byteLength, hash: hash, buffer: encrypted };
     } else {
       const hash = await sha256(arrayBuffer);
-      return { size: arrayBuffer.byteLength, hash: hash };
+      return { size: arrayBuffer.byteLength, hash: hash, buffer: arrayBuffer };
     }
   }
 
@@ -250,7 +370,9 @@ export class SyncClient {
     settings: ClientSettings,
     deletedFiles: Record<string, number>,
     updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>,
-    hashCache?: ContentHashCache
+    hashCache?: ContentHashCache,
+    onProgress?: SyncProgressCallback,
+    onRetry?: SyncRetryCallback
   ) {
     this.vault = vault;
     this.fileManager = fileManager;
@@ -260,10 +382,23 @@ export class SyncClient {
     this.deletedFiles = deletedFiles;
     this.updateDeletedFiles = updateDeletedFiles;
     this.hashCache = hashCache;
+    this.onProgress = onProgress;
+    this.onRetry = onRetry;
 
     const protocol = settings.useTls ? "https" : "http";
     const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
     this.client = new SyncServiceClient(hostUrl);
+  }
+
+  // Always reports the final item of a phase (done === total) so the UI never gets stuck showing a
+  // stale count; otherwise throttled to a few times a second so mapWithConcurrency's per-file
+  // callbacks don't turn into a per-file Notice DOM update on large vaults.
+  private reportProgress(phase: SyncProgressPhase, done: number, total: number): void {
+    if (!this.onProgress) return;
+    const now = Date.now();
+    if (done !== total && now - this.lastProgressReportAt < 150) return;
+    this.lastProgressReportAt = now;
+    this.onProgress({ phase, done, total });
   }
 
   private async calculateHash(file: TFile): Promise<string> {
@@ -306,11 +441,160 @@ export class SyncClient {
           throw e;
         }
         console.warn(`Sync failed, retrying in ${delay}ms... (Remaining retries: ${retries})`, e);
-        new Notice(`동기화 실패, ${delay}ms 후 재시도합니다... (남은 재시도: ${retries})`);
+        this.onRetry?.({ delayMs: delay, retriesLeft: retries });
         await new Promise((resolve) => window.setTimeout(resolve, delay));
         delay *= 2;
       }
     }
+  }
+
+  // Builds one file's full [header, data..., eof] FileChunk sequence -- shared by both upload
+  // paths below (streaming and the batched gRPC-Web fallback), which only differ in how these
+  // chunks get onto the wire, not in how they're built.
+  private async buildFileChunks(
+    uploadPath: string,
+    vaultId: string,
+    scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>
+  ): Promise<pb.FileChunk[]> {
+    try {
+      // Reuse the buffer read (and, under E2EE, encrypted) during the scan step above when
+      // available -- this is what avoids reading/re-encrypting every file a second time here,
+      // which is otherwise unavoidable on the very first sync since need_upload == every file.
+      const cached = scannedWireBuffers.get(uploadPath);
+      let sendBuffer: ArrayBuffer;
+      let contentHash: string;
+      let mtime: number;
+
+      if (cached) {
+        sendBuffer = cached.buffer;
+        contentHash = cached.hash;
+        mtime = cached.mtime;
+        // Consumed -- release it now instead of holding it until the whole sync finishes, so
+        // later files/batches don't keep every earlier one's buffers alive at once.
+        scannedWireBuffers.delete(uploadPath);
+      } else {
+        const exists = await existsByPath(this.vault, uploadPath);
+        if (!exists) return [];
+
+        const arrayBuffer = await readBinaryByPath(this.vault, uploadPath);
+        sendBuffer = arrayBuffer;
+        contentHash = "";
+
+        if (this.settings.enableE2EE && this.settings.e2eePassword) {
+          const key = await this.getE2eeKey();
+          sendBuffer = await this.encryptData(arrayBuffer, key);
+          contentHash = await sha256(sendBuffer);
+        } else {
+          contentHash = await sha256(arrayBuffer);
+        }
+
+        const stat = await statByPath(this.vault, uploadPath);
+        mtime = stat ? stat.mtime : Date.now();
+      }
+
+      const fileChunks: pb.FileChunk[] = [];
+
+      // Header chunk
+      const headerChunk = new pb.FileChunk();
+      const header = new pb.ChunkHeader();
+      header.setVaultId(vaultId);
+      header.setPath(uploadPath);
+      header.setTotalBytes(sendBuffer.byteLength);
+      header.setModifiedAtMs(mtime);
+      headerChunk.setHeader(header);
+      fileChunks.push(headerChunk);
+
+      // Data chunks
+      const CHUNK_SIZE = 256 * 1024;
+      let sequence = 0;
+      for (let offset = 0; offset < sendBuffer.byteLength; offset += CHUNK_SIZE) {
+        const chunk = sendBuffer.slice(offset, offset + CHUNK_SIZE);
+        const dataChunk = new pb.FileChunk();
+        const dataPayload = new pb.ChunkData();
+        dataPayload.setPath(uploadPath);
+        dataPayload.setSequence(sequence++);
+        dataPayload.setData(new Uint8Array(chunk));
+        dataChunk.setData(dataPayload);
+        fileChunks.push(dataChunk);
+      }
+
+      // EOF chunk
+      const eofChunk = new pb.FileChunk();
+      const eof = new pb.ChunkEOF();
+      eof.setPath(uploadPath);
+      eof.setContentHash(contentHash);
+      eofChunk.setEof(eof);
+      fileChunks.push(eofChunk);
+
+      return fileChunks;
+    } catch (err) {
+      console.error(`Error preparation ${uploadPath} for upload:`, err);
+      return [];
+    }
+  }
+
+  // True client-streaming upload (#4_옵션B_구현_계획.md 설계 B): one open connection, no "batch"
+  // concept at all -- chunks are enqueued onto the request body as each file finishes being
+  // prepared (overlapped up to UPLOAD_PREP_CONCURRENCY at a time via streamWithConcurrency), and
+  // the server (pumice-server's StreamingUploadRequest/EnvelopeStreamParser) parses and writes
+  // them to disk incrementally as they arrive rather than after the whole request is buffered.
+  //
+  // Files must be streamed in order, one fully completed (header, all data, eof) before the next
+  // file's header starts -- the server tracks only one "current file" per connection and discards
+  // an unfinished one if a new header arrives (mirrors the batched path's per-file ordering,
+  // which was always implicit there since each file's triplet was already contiguous within one
+  // serialized UploadBatch message). streamWithConcurrency's in-order yield guarantee is what
+  // keeps overlapped preparation from accidentally interleaving two files' chunks on the wire.
+  private async uploadFilesStreaming(
+    needUploadList: string[],
+    vaultId: string,
+    scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>,
+    onAck: (ack: pb.UploadAck) => void
+  ): Promise<void> {
+    const UPLOAD_PREP_CONCURRENCY = 8;
+
+    const bodyStream = new ReadableStream<Uint8Array>({
+      start: async (controller) => {
+        try {
+          for await (const fileChunks of streamWithConcurrency(
+            needUploadList,
+            UPLOAD_PREP_CONCURRENCY,
+            (uploadPath) => this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
+          )) {
+            for (const chunk of fileChunks) {
+              controller.enqueue(encodeEnvelopeFrame(chunk.serializeBinary()));
+            }
+          }
+          controller.close();
+        } catch (err) {
+          controller.error(err);
+        }
+      },
+    });
+
+    const protocol = this.settings.useTls ? "https" : "http";
+    const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/obsidian.sync.v1.SyncService/UploadFilesStream`;
+
+    const resp = await fetch(url, {
+      method: "POST",
+      // @ts-ignore -- duplex is not yet in the TS lib.dom fetch types
+      duplex: "half",
+      headers: {
+        "authorization": `Bearer ${this.token}`,
+        "x-device-name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
+        "x-user-name": encodeURIComponent(this.settings.userName || "Unknown User"),
+      },
+      body: bodyStream,
+    });
+
+    if (!resp.ok || !resp.body) {
+      throw new Error(`Streaming upload request failed: HTTP ${resp.status}`);
+    }
+
+    await readEnvelopedResponses(resp.body, (flags, payload) => {
+      if (flags & 0x80) return; // trailer frame -- marks end of the ack stream, no payload
+      onAck(pb.UploadAck.deserializeBinary(payload));
+    });
   }
 
   private async internalSync(): Promise<{ uploaded: number; downloaded: number; deleted: number }> {
@@ -333,6 +617,21 @@ export class SyncClient {
     const keyFingerprint =
       this.settings.enableE2EE && this.settings.e2eePassword ? await this.getKeyFingerprint() : "";
 
+    // Reused by the upload-prep step below so a file read (and, under E2EE, encrypted) during this
+    // scan isn't read/encrypted a second time if it turns out to need uploading -- the common case
+    // on the very first sync, when every file is new and nothing in ContentHashCache can help yet.
+    // Bounded by a byte budget so a large vault's full first-sync upload set can't all be held in
+    // memory at once; entries that don't fit are simply skipped and re-read at upload time as before.
+    const REUSE_BUDGET_BYTES = 200 * 1024 * 1024;
+    let reuseBudgetRemaining = REUSE_BUDGET_BYTES;
+    const scannedWireBuffers = new Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>();
+    const maybeCacheWireBuffer = (path: string, buffer: ArrayBuffer, hash: string, mtime: number): void => {
+      if (buffer.byteLength > reuseBudgetRemaining) return;
+      scannedWireBuffers.set(path, { buffer, hash, mtime });
+      reuseBudgetRemaining -= buffer.byteLength;
+    };
+
+    let scanDone = 0;
     const scanResults = await mapWithConcurrency(filesToScan, SCAN_CONCURRENCY, async (file) => {
       let size: number;
       let hash: string;
@@ -344,6 +643,7 @@ export class SyncClient {
           const meta = await this.hashCache.getWireHash(file, keyFingerprint, async () => {
             const arrayBuffer = await this.vault.readBinary(file);
             const encMeta = await this.getFileMetadataFromBuffer(arrayBuffer);
+            maybeCacheWireBuffer(file.path, encMeta.buffer, encMeta.hash, file.stat.mtime);
             return { plainHash: await sha256(arrayBuffer), wireHash: encMeta.hash, wireSize: encMeta.size };
           });
           hash = meta.wireHash;
@@ -359,11 +659,14 @@ export class SyncClient {
           size = meta.size;
           hash = meta.hash;
           plainHashForCache = await sha256(arrayBuffer);
+          maybeCacheWireBuffer(file.path, meta.buffer, meta.hash, file.stat.mtime);
         }
       } else if (this.hashCache) {
         hash = await this.hashCache.getHash(file, async () => {
           const arrayBuffer = await this.vault.readBinary(file);
-          return sha256(arrayBuffer);
+          const computedHash = await sha256(arrayBuffer);
+          maybeCacheWireBuffer(file.path, arrayBuffer, computedHash, file.stat.mtime);
+          return computedHash;
         });
         size = file.stat.size;
         plainHashForCache = hash;
@@ -372,8 +675,10 @@ export class SyncClient {
         hash = await sha256(arrayBuffer);
         size = arrayBuffer.byteLength;
         plainHashForCache = hash;
+        maybeCacheWireBuffer(file.path, arrayBuffer, hash, file.stat.mtime);
       }
 
+      this.reportProgress("scan", ++scanDone, filesToScan.length);
       return { file, hash, size, plainHashForCache, cacheable };
     });
 
@@ -414,7 +719,8 @@ export class SyncClient {
           const stat = await this.vault.adapter.stat(bookmarkPath);
           if (stat) {
             const arrayBuffer = await this.vault.adapter.readBinary(bookmarkPath);
-            const { size, hash } = await this.getFileMetadataFromBuffer(arrayBuffer);
+            const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer);
+            maybeCacheWireBuffer(bookmarkPath, buffer, hash, stat.mtime);
             localFilesMeta.push({
               path: bookmarkPath,
               modified_at_ms: stat.mtime,
@@ -501,100 +807,66 @@ export class SyncClient {
       }
     }
 
-    // 4. UploadFiles (gRPC-Web batch request)
-    if (needUploadList.length > 0) {
-      const uploadBatch = new pb.UploadBatch();
-
-      // Same fix as the scan step above and for the same reason: reading/hashing each file to
-      // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This overlaps
-      // them instead. mapWithConcurrency preserves per-item result order, so flattening
-      // perFileChunks reproduces exactly the same overall chunk sequence the old sequential loop
-      // would have -- each file's own [header, data..., eof] triplet stays intact and in order,
-      // only which files finish preparing in what wall-clock order changes.
-      const UPLOAD_PREP_CONCURRENCY = 8;
-      const perFileChunks = await mapWithConcurrency(needUploadList, UPLOAD_PREP_CONCURRENCY, async (uploadPath): Promise<pb.FileChunk[]> => {
-        try {
-          const exists = await existsByPath(this.vault, uploadPath);
-          if (!exists) return [];
-
-          const arrayBuffer = await readBinaryByPath(this.vault, uploadPath);
-
-          let sendBuffer: ArrayBuffer = arrayBuffer;
-          let contentHash = "";
-
-          if (this.settings.enableE2EE && this.settings.e2eePassword) {
-            const key = await this.getE2eeKey();
-            sendBuffer = await this.encryptData(arrayBuffer, key);
-            contentHash = await sha256(sendBuffer);
-          } else {
-            contentHash = await sha256(arrayBuffer);
-          }
-
-          const stat = await statByPath(this.vault, uploadPath);
-          const mtime = stat ? stat.mtime : Date.now();
-
-          const fileChunks: pb.FileChunk[] = [];
-
-          // Header chunk
-          const headerChunk = new pb.FileChunk();
-          const header = new pb.ChunkHeader();
-          header.setVaultId(vaultId);
-          header.setPath(uploadPath);
-          header.setTotalBytes(sendBuffer.byteLength);
-          header.setModifiedAtMs(mtime);
-          headerChunk.setHeader(header);
-          fileChunks.push(headerChunk);
-
-          // Data chunks
-          const CHUNK_SIZE = 256 * 1024;
-          let sequence = 0;
-          for (let offset = 0; offset < sendBuffer.byteLength; offset += CHUNK_SIZE) {
-            const chunk = sendBuffer.slice(offset, offset + CHUNK_SIZE);
-            const dataChunk = new pb.FileChunk();
-            const dataPayload = new pb.ChunkData();
-            dataPayload.setPath(uploadPath);
-            dataPayload.setSequence(sequence++);
-            dataPayload.setData(new Uint8Array(chunk));
-            dataChunk.setData(dataPayload);
-            fileChunks.push(dataChunk);
-          }
-
-          // EOF chunk
-          const eofChunk = new pb.FileChunk();
-          const eof = new pb.ChunkEOF();
-          eof.setPath(uploadPath);
-          eof.setContentHash(contentHash);
-          eofChunk.setEof(eof);
-          fileChunks.push(eofChunk);
-
-          return fileChunks;
-        } catch (err) {
-          console.error(`Error preparation ${uploadPath} for upload:`, err);
-          return [];
+    // 4. UploadFiles -- true client-streaming (#4_옵션B_구현_계획.md 설계 B) when the browser and
+    // configured connection support it, falling back to batched gRPC-Web unary requests (#4 옵션
+    // A) otherwise. Both paths report acks through the same callback/progress logic.
+    let uploadAcksProcessed = 0;
+    const onUploadAck = (ack: pb.UploadAck): void => {
+      const ackPath = ack.getPath();
+      if (ack.getOk()) {
+        uploadCount++;
+        if (this.deletedFiles[ackPath]) {
+          delete this.deletedFiles[ackPath];
         }
-      });
+      } else {
+        console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
+      }
+      this.reportProgress("upload", ++uploadAcksProcessed, needUploadList.length);
+    };
 
-      uploadBatch.setChunksList(perFileChunks.flat());
+    if (supportsStreamingUpload(this.settings)) {
+      await this.uploadFilesStreaming(needUploadList, vaultId, scannedWireBuffers, onUploadAck);
+    } else {
+      // Split into multiple batches bounded by byte size and file count. A single UploadBatch
+      // covering the whole first-sync upload set would otherwise have to sit fully serialized in
+      // memory before the first byte goes out; per the benchmark in #4_구현_계획.md (real
+      // generated protobuf classes, ~1.1GB synthetic upload), batching this cut peak RSS by ~17x
+      // and was *faster* to prepare/serialize too, not slower -- avoiding the reallocation cost
+      // of building one huge array/message. MAX_FILES_PER_BATCH exists because byte size alone
+      // isn't enough of a cap: a real vault is dominated by many small notes, so a byte-only cap
+      // let one batch swallow 95%+ of the file list in that same benchmark.
+      const BATCH_TARGET_BYTES = 20 * 1024 * 1024;
+      const MAX_FILES_PER_BATCH = 500;
+      const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
+      const uploadBatches = groupIntoBatches(needUploadList, (p) => sizeByPath.get(p) ?? 0, BATCH_TARGET_BYTES, MAX_FILES_PER_BATCH);
 
-      // Handle the server's streaming response
-      await new Promise<void>((resolve, reject) => {
-        const uploadStream = this.client.uploadFiles(uploadBatch, metadata);
+      for (const batchPaths of uploadBatches) {
+        const uploadBatch = new pb.UploadBatch();
 
-        uploadStream.on("data", (ack: pb.UploadAck) => {
-          const ackPath = ack.getPath();
-          if (ack.getOk()) {
-            uploadCount++;
-            if (this.deletedFiles[ackPath]) {
-              delete this.deletedFiles[ackPath];
-            }
-          } else {
-            console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
-          }
+        // Same fix as the scan step above and for the same reason: reading/hashing each file to
+        // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This
+        // overlaps them instead. mapWithConcurrency preserves per-item result order, so
+        // flattening perFileChunks reproduces exactly the same overall chunk sequence the old
+        // sequential loop would have -- each file's own [header, data..., eof] triplet stays
+        // intact and in order, only which files finish preparing in what wall-clock order changes.
+        const UPLOAD_PREP_CONCURRENCY = 8;
+        const perFileChunks = await mapWithConcurrency(batchPaths, UPLOAD_PREP_CONCURRENCY, (uploadPath) =>
+          this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
+        );
+
+        uploadBatch.setChunksList(perFileChunks.flat());
+
+        // Handle the server's streaming response for this one batch before preparing the next --
+        // deliberately sequential (no pipelining of batch N+1's prep against batch N's send/ack
+        // wait) for this first version; see #4_구현_계획.md "향후 개선" for why that tradeoff was
+        // deferred rather than built without measuring it first.
+        await new Promise<void>((resolve, reject) => {
+          const uploadStream = this.client.uploadFiles(uploadBatch, metadata);
+          uploadStream.on("data", onUploadAck);
+          uploadStream.on("end", () => resolve());
+          uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
         });
-
-        uploadStream.on("end", () => resolve());
-        uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
-      });
+      }
     }
 
     // 5. DownloadFiles (gRPC-Web batch request)
@@ -604,6 +876,7 @@ export class SyncClient {
       downloadReq.setVaultId(vaultId);
       downloadReq.setPathsList(filesToDownload.map((f) => f.getPath()));
 
+      let downloadsProcessed = 0;
       await new Promise<void>((resolve, reject) => {
         const downloadStream = this.client.downloadFiles(downloadReq, metadata);
         const fileBuffers = new Map<string, { mtime: number; chunks: Uint8Array[] }>();
@@ -629,6 +902,7 @@ export class SyncClient {
 
             const fileDataBytes = concatUint8Arrays(buf.chunks);
             fileBuffers.delete(eofPath);
+            this.reportProgress("download", ++downloadsProcessed, filesToDownload.length);
 
             const calculatedHash = await sha256(fileDataBytes.buffer as ArrayBuffer);
             if (calculatedHash !== eofPayload.getContentHash()) {
@@ -656,7 +930,7 @@ export class SyncClient {
                     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
                     const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
                     await writeBinaryByPath(this.vault, conflictPath, oldData);
-                    new Notice(`충돌 파일 백업 생성됨: ${pathUtil.basename(conflictPath)}`);
+                    new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
                   } catch (backupErr) {
                     console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
                   }
@@ -915,7 +1189,7 @@ export class SyncClient {
     // Same per-file upload size limit as core Publish (reverse-engineered from obsidian.asar:
     // 52428800 = rejected with a "TOOLARGE" error above 50MB).
     if (data.byteLength > 50 * 1024 * 1024) {
-      throw new Error(`파일이 50MB 제한을 초과했습니다: ${filePath}`);
+      throw new Error(t("plugins.publish.error-file-too-large", "File exceeds the 50MB limit: {{path}}", { path: filePath }));
     }
     const hash = await this.computeHash(data);
 

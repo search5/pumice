@@ -373,7 +373,7 @@ export class LocalSnapshotModal extends Modal {
       await navigator.clipboard.writeText(this.activeSnapshot.data);
       new Notice(t("interface.copied_generic", "Copied to clipboard"));
     } catch (e: unknown) {
-      new Notice(`복사 실패: ${errorMessage(e)}`);
+      new Notice(t("plugins.sync.msg-copy-failed", "Copy failed: {{error}}", { error: errorMessage(e) }));
     }
   }
 
@@ -413,7 +413,7 @@ export class LocalSnapshotModal extends Modal {
       this.selectIndex(0);
       if (!this.isDesktop) this.mobileLayoutEl.addClass("is-preview");
     } catch (e: unknown) {
-      new Notice(`버전 복원 실패: ${errorMessage(e)}`);
+      new Notice(t("plugins.sync.msg-restore-failed", "Failed to restore version: {{error}}", { error: errorMessage(e) }));
     }
   }
 }
