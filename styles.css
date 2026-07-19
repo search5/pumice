@@ -537,15 +537,33 @@
   display: flex;
   flex-direction: column;
   min-height: 50vh;
-  max-height: 88vh;
-  overflow-y: auto;
   /* Obsidian's mobile bottom toolbar/tab bar is an overlay, not accounted for by vh units or
      env(safe-area-inset-bottom) alone (that only covers the OS-level home indicator/gesture
-     area) -- without this, the last visible row (Publish/Cancel, or Done once uploaded) sits
-     exactly at the 88vh line and ends up hidden behind that overlay. The fixed 72px is a rough
-     estimate of that overlay's height; the env() term stacks on top of it for devices that also
+     area). A padding-bottom here doesn't help when the review list is short enough that
+     .modal-content isn't actually scrolling -- padding only creates extra scroll room, it
+     doesn't move a non-scrolling box's bottom edge. Shrinking max-height itself is what actually
+     keeps the whole box (buttons included) clear of that overlay regardless of content length.
+     72px is a rough estimate of the overlay's height; env() stacks on top for devices that also
      need the OS safe-area padding. */
-  padding-bottom: calc(72px + env(safe-area-inset-bottom));
+  max-height: calc(88vh - 72px - env(safe-area-inset-bottom));
+  overflow-y: auto;
+}
+
+/* Core's own mobile CSS for .modal-button-container assumes a full-screen mobile modal and
+   "full-bleeds" it to the device's actual viewport edges (fixed/viewport-relative positioning) --
+   fine for core's own modals, which really are full-screen on mobile, but ours is deliberately
+   kept narrower (width: min(720px, 92vw)) even on mobile, so that trick breaks it out past our
+   modal's own right edge instead of the screen's. Reset it back to a normal block that respects
+   our modal's actual width. Confirmed via a real landscape-orientation screenshot: the button row
+   was rendering all the way to the physical screen edge while every other row in the same modal
+   stayed correctly contained. */
+.is-mobile .grpc-publish-modal .modal-button-container {
+  position: static;
+  inset: auto;
+  transform: none;
+  width: auto;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .grpc-publish-modal .message-container,
