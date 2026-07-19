@@ -1,6 +1,6 @@
 {
   "name": "pumice",
-  "version": "0.0.12",
+  "version": "0.0.13",
   "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
   "main": "main.js",
   "author": "Ji-ho Lee <search5@gmail.com>",
