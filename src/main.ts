@@ -95,9 +95,12 @@ export default class SyncPlugin extends Plugin {
       );
       // The settings tab may already be open (that's usually how the user got to the "Log in"
       // button in the first place) and won't otherwise know the token changed underneath it --
-      // rebuild its declarative definitions so it reflects the new state instead of still showing
-      // the login prompt.
-      this.settingTab.update();
+      // refresh it so it reflects the new state instead of still showing the login prompt.
+      // update() (1.13.0+) rebuilds the declarative definitions; below that, Obsidian never calls
+      // getSettingDefinitions() at all, so display() (the legacy full re-render) is what's live.
+      const settingTab = this.settingTab as unknown as { update?: () => void; display: () => void };
+      if (typeof settingTab.update === "function") settingTab.update();
+      else settingTab.display();
     });
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
