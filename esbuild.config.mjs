@@ -18,7 +18,8 @@ try {
 const obsidianPluginPaths = [
   "/home/jiho/Documents/nos/.obsidian/plugins/pumice",
   "/home/jiho/.local/Obsidian/.obsidian/plugins/pumice",
-  "/home/jiho/Documents/obs/.obsidian/plugins/pumice"
+  "/home/jiho/Documents/obs/.obsidian/plugins/pumice",
+  "/home/jiho/Documents/pumice-stream-test/.obsidian/plugins/pumice"
 ];
 
 const copyToObsidianPlugin = {

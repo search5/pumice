@@ -662,7 +662,7 @@ export class SyncHistoryModal extends Modal {
         });
       }
     } catch (e: unknown) {
-      this.previewEl.createDiv({ text: `미리보기 실패: ${errorMessage(e)}` });
+      this.previewEl.createDiv({ text: t("plugins.sync.msg-preview-failed", "Preview failed: {{error}}", { error: errorMessage(e) }) });
     }
   }
 
@@ -673,7 +673,7 @@ export class SyncHistoryModal extends Modal {
       await navigator.clipboard.writeText(content);
       new Notice(t("interface.copied_generic", "Copied to clipboard"));
     } catch (e: unknown) {
-      new Notice(`복사 실패: ${errorMessage(e)}`);
+      new Notice(t("plugins.sync.msg-copy-failed", "Copy failed: {{error}}", { error: errorMessage(e) }));
     }
   }
 
@@ -698,7 +698,7 @@ export class SyncHistoryModal extends Modal {
       void restoredPath;
       this.close();
     } catch (e: unknown) {
-      new Notice(`버전 복원 실패: ${errorMessage(e)}`);
+      new Notice(t("plugins.sync.msg-restore-failed", "Failed to restore version: {{error}}", { error: errorMessage(e) }));
     }
   }
 }

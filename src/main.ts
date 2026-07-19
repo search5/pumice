@@ -2,7 +2,7 @@ import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile
 import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
-import { SyncClient } from "./syncClient";
+import { SyncClient, type SyncProgressPhase } from "./syncClient";
 import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
@@ -10,10 +10,10 @@ import { ContentHashCache } from "./contentHashCache";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 
-// The "Vault Sync" ribbon button has no core equivalent, so there's no translation key for it —
-// we just hardcode English/Korean and pick based on Obsidian's UI language (document.documentElement.lang).
+// The "Vault Sync" ribbon button has no core equivalent, so there's no core translation key for
+// it either -- plugins.sync.label-vault-sync-ribbon is our own.
 function vaultSyncRibbonLabel(): string {
-  return activeDocument.documentElement.lang.toLowerCase().startsWith("ko") ? "Vault 동기화" : "Vault Sync";
+  return t("plugins.sync.label-vault-sync-ribbon", "Vault Sync");
 }
 
 // DataAdapter's public interface has no getFullPath — it only exists on the concrete desktop
@@ -21,12 +21,12 @@ function vaultSyncRibbonLabel(): string {
 // via instanceof. Supporting only desktop would break sync entirely on mobile, so both are handled.
 function getAdapterFullPath(adapter: DataAdapter, normalizedPath: string | undefined): string {
   if (!normalizedPath) {
-    throw new Error("경로를 확인할 수 없습니다.");
+    throw new Error(t("settings.error-path-unresolved", "Could not resolve the path."));
   }
   if (adapter instanceof FileSystemAdapter || adapter instanceof CapacitorAdapter) {
     return adapter.getFullPath(normalizedPath);
   }
-  throw new Error("지원되지 않는 플랫폼입니다.");
+  throw new Error(t("settings.error-unsupported-platform", "Unsupported platform."));
 }
 
 // Slash-based path utilities
@@ -126,7 +126,7 @@ export default class SyncPlugin extends Plugin {
 
     this.addCommand({
       id: "sync-now",
-      name: "지금 동기화",
+      name: t("settings.option-sync-now", "Sync now"),
       callback: () => this.syncNow(),
     });
 
@@ -253,7 +253,11 @@ export default class SyncPlugin extends Plugin {
                 : [...includeFolders, file.path];
               this.settings.publishIncludeFolders = next.join("\n");
               await this.saveSettings();
-              new Notice(isIncluded ? "게시 포함 폴더에서 제외했습니다." : "게시 포함 폴더로 추가했습니다.");
+              new Notice(
+                isIncluded
+                  ? t("plugins.publish.msg-folder-excluded", "Removed from included folders.")
+                  : t("plugins.publish.msg-folder-included", "Added to included folders.")
+              );
             });
         });
       })
@@ -370,7 +374,7 @@ export default class SyncPlugin extends Plugin {
   async testConnection(): Promise<void> {
     const token = await this.getToken();
     if (!token) {
-      throw new Error("동기화 토큰이 설정되지 않았습니다.");
+      throw new Error(t("settings.msg-no-token", "No sync token is set."));
     }
 
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
@@ -393,11 +397,18 @@ export default class SyncPlugin extends Plugin {
   async syncNow(): Promise<void> {
     const token = await this.getToken();
     if (!token) {
-      new Notice("동기화 토큰이 설정되지 않았습니다.");
+      new Notice(t("settings.msg-no-token", "No sync token is set."));
       return;
     }
 
-    new Notice("동기화를 시작합니다...");
+    const phaseLabel: Record<SyncProgressPhase, string> = {
+      scan: t("plugins.sync.label-phase-scan", "scan"),
+      upload: t("plugins.sync.label-phase-upload", "upload"),
+      download: t("plugins.sync.label-phase-download", "download"),
+    };
+    // duration=0 keeps this Notice open until hide() is called below, so it can be updated in
+    // place as progress comes in instead of the old fire-and-forget start/end Notice pair.
+    const progressNotice = new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
 
     try {
       const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
@@ -412,16 +423,29 @@ export default class SyncPlugin extends Plugin {
           this.deletedFiles = deleted;
           await this.savePluginData();
         },
-        this.contentHashCache
+        this.contentHashCache,
+        ({ phase, done, total }) => {
+          progressNotice.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
+        },
+        ({ delayMs, retriesLeft }) => {
+          // Reuses the same progressNotice instead of popping up a separate toast on top of it.
+          progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
+        }
       );
 
       const result = await client.sync();
+      progressNotice.hide();
       new Notice(
-        `동기화 완료: 업로드 ${result.uploaded}개, 다운로드 ${result.downloaded}개, 삭제 ${result.deleted}개`
+        t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
+          uploaded: result.uploaded,
+          downloaded: result.downloaded,
+          deleted: result.deleted,
+        })
       );
     } catch (e: unknown) {
+      progressNotice.hide();
       console.error("Sync failed:", e);
-      new Notice(`동기화 실패: ${errorMessage(e)}`);
+      new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
     }
   }
 

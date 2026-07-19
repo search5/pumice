@@ -108,6 +108,17 @@ service SyncService {
   // Step 2-A: upload N files (single batch request → server-streamed ACKs)
   rpc UploadFiles(UploadBatch) returns (stream UploadAck);
 
+  // Step 2-A' (opt-in, duplex-capable clients only): the same [Header, Data..., EOF]
+  // FileChunk sequence as UploadFiles, but delivered as true client-streaming instead of
+  // bundled into one UploadBatch message -- avoids fully buffering the request body, both
+  // client-side (fetch()+ReadableStream) and server-side (see pumice-server's
+  // StreamingUploadRequest/EnvelopeStreamParser). NOT reachable through the generated
+  // gRPC-Web stub: browsers' grpc-web/connect-es libraries don't support client-streaming
+  // (see #4_옵션B_구현_계획.md), so this is called via a hand-rolled fetch() with the same
+  // envelope wire format (1-byte flags + 4-byte BE length + payload) gRPC-Web itself uses.
+  // Declared here for documentation/API-contract purposes only.
+  rpc UploadFilesStream(stream FileChunk) returns (stream UploadAck);
+
   // Step 2-B: download N files (single batch request → server-streamed FileChunks)
   rpc DownloadFiles(DownloadBatchRequest) returns (stream FileChunk);
 
