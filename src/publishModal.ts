@@ -1186,15 +1186,25 @@ export class PublishModal extends Modal {
       // "Publish current file" (this.focusFile set, opened from the file context menu) is a single
       // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
       // walk the way the general "Publish changes" entry point (no focus file) does.
-      const diffs = this.focusFile
-        ? scanSingleFile(this.focusFile)
-        : await scanForChanges(
-            this.app, client ?? (client = await this.plugin.getSyncClient()),
-            this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
-            this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
-            this.plugin.contentHashCache
-          );
-      this.reviewChangesSection.setDiffs(diffs, this.focusFile);
+      if (this.focusFile) {
+        // A file force-published without "publish: true" would go live on the server yet be invisible
+        // to future folder-wide scans (scanForChanges is frontmatter-driven) — require the frontmatter
+        // to be set BEFORE publishing rather than publishing first and telling the user afterward.
+        if (getPublishFlag(this.app, this.focusFile) === true) {
+          this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile), this.focusFile);
+        } else {
+          this.showError(t("plugins.publish.msg-set-publish-frontmatter-first", 'Add "publish: true" to this file\'s frontmatter before publishing it.'));
+          this.reviewChangesSection.setDiffs([], this.focusFile);
+        }
+      } else {
+        const diffs = await scanForChanges(
+          this.app, client ?? (client = await this.plugin.getSyncClient()),
+          this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
+          this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
+          this.plugin.contentHashCache
+        );
+        this.reviewChangesSection.setDiffs(diffs, this.focusFile);
+      }
     } catch (e: unknown) {
       this.showError(
         t("plugins.publish.msg-load-changes-failed", "Failed to load changes: {{error}}", {
