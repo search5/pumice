@@ -5,7 +5,7 @@
 // trips overlap instead. Shared by regular sync (syncClient.ts) and the Publish diff scan
 // (publishModal.ts), which both have to walk every file in the vault.
 export async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  const results: R[] = new Array<R>(items.length);
   let cursor = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
     while (cursor < items.length) {

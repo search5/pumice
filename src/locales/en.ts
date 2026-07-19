@@ -146,6 +146,7 @@ export const en: Record<string, string> = {
   "settings.msg-no-token": "No sync token is set.",
   "settings.msg-sync-complete": "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted",
   "settings.msg-sync-failed": "Sync failed: {{error}}",
+  "settings.msg-clear-snapshots-failed": "Failed to clear local snapshots: {{error}}",
   "settings.msg-sync-starting": "Starting sync...",
 
   "settings.option-sync-files": "Sync files",
