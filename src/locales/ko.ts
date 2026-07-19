@@ -144,6 +144,7 @@ export const ko: Record<string, string> = {
   "settings.msg-no-token": "동기화 토큰이 설정되지 않았습니다.",
   "settings.msg-sync-complete": "동기화 완료: 업로드 {{uploaded}}개, 다운로드 {{downloaded}}개, 삭제 {{deleted}}개",
   "settings.msg-sync-failed": "동기화 실패: {{error}}",
+  "settings.msg-clear-snapshots-failed": "로컬 스냅샷 삭제 실패: {{error}}",
   "settings.msg-sync-starting": "동기화를 시작합니다...",
 
   "settings.option-sync-files": "파일 동기화",

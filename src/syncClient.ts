@@ -575,6 +575,10 @@ export class SyncClient {
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/obsidian.sync.v1.SyncService/UploadFilesStream`;
 
+    // requestUrl() (httpFetch() above) can't do this: its body is `string | ArrayBuffer`, with no
+    // ReadableStream/duplex option -- the entire point of this method is streaming a request body
+    // that's produced incrementally, which requestUrl has no way to express. Raw fetch() is the only
+    // API that supports it, and it's exactly what supportsStreamingUpload() gates this call on.
     const resp = await fetch(url, {
       method: "POST",
       // @ts-ignore -- duplex is not yet in the TS lib.dom fetch types
@@ -881,7 +885,13 @@ export class SyncClient {
         const downloadStream = this.client.downloadFiles(downloadReq, metadata);
         const fileBuffers = new Map<string, { mtime: number; chunks: Uint8Array[] }>();
 
-        downloadStream.on("data", async (chunk: pb.FileChunk) => {
+        // Wrapped so the listener itself stays synchronous (as EventEmitter#on expects) while the
+        // async body inside is still fully error-guarded -- an unguarded throw in here (e.g. the
+        // sha256 call below) would otherwise become an unhandled promise rejection instead of the
+        // same "log and move on to the next file" handling every other failure path here gets.
+        downloadStream.on("data", (chunk: pb.FileChunk) => {
+          void (async () => {
+          try {
           if (chunk.hasHeader()) {
             const header = chunk.getHeader()!;
             fileBuffers.set(header.getPath(), {
@@ -969,6 +979,10 @@ export class SyncClient {
               console.error(`Failed to save downloaded file ${eofPath}:`, e);
             }
           }
+          } catch (e: unknown) {
+            console.error("Failed to process downloaded chunk:", e);
+          }
+          })();
         });
 
         downloadStream.on("end", () => resolve());
@@ -1023,7 +1037,9 @@ export class SyncClient {
         get: (name: string) => resp.headers[name] ?? resp.headers[name.toLowerCase()] ?? null,
       },
       text: async () => resp.text,
-      json: async () => resp.json,
+      // RequestUrlResponse.json is typed `any` (parsed JSON is inherently arbitrary shape) --
+      // explicit `unknown` keeps that from leaking past this wrapper's declared Promise<unknown>.
+      json: async (): Promise<unknown> => resp.json as unknown,
       arrayBuffer: async () => resp.arrayBuffer,
     };
   }

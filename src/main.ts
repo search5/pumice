@@ -10,6 +10,15 @@ import { ContentHashCache } from "./contentHashCache";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 
+// Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
+// (matching what savePluginData() below actually writes) keeps the `any` from flowing into
+// this.settings/this.deletedFiles. `settings` also covers the pre-wrapper format, where the
+// loaded object *was* the flat settings (see the `data.settings || data` fallback below).
+interface PersistedPluginData {
+  settings?: Partial<SyncPluginSettings>;
+  deletedFiles?: Record<string, number>;
+}
+
 // The "Vault Sync" ribbon button has no core equivalent, so there's no core translation key for
 // it either -- plugins.sync.label-vault-sync-ribbon is our own.
 function vaultSyncRibbonLabel(): string {
@@ -86,8 +95,9 @@ export default class SyncPlugin extends Plugin {
       );
       // The settings tab may already be open (that's usually how the user got to the "Log in"
       // button in the first place) and won't otherwise know the token changed underneath it --
-      // re-render so it reflects the new state instead of still showing the login prompt.
-      this.settingTab.display();
+      // rebuild its declarative definitions so it reflects the new state instead of still showing
+      // the login prompt.
+      this.settingTab.update();
     });
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
@@ -336,7 +346,7 @@ export default class SyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const data = await this.loadData() || {};
+    const data = ((await this.loadData()) as PersistedPluginData | null) || {};
     this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
     this.deletedFiles = data.deletedFiles || {};
 
@@ -452,7 +462,7 @@ export default class SyncPlugin extends Plugin {
   private startAutoSync(): void {
     if (this.autoSyncTimer) return;
     const ms = this.settings.syncIntervalSeconds * 1000;
-    this.autoSyncTimer = window.setInterval(() => this.syncNow(), ms);
+    this.autoSyncTimer = window.setInterval(() => void this.syncNow(), ms);
   }
 
   private stopAutoSync(): void {

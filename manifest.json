@@ -2,7 +2,7 @@
   "id": "pumice",
   "name": "Pumice",
   "version": "0.0.13",
-  "minAppVersion": "1.11.4",
+  "minAppVersion": "1.13.0",
   "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
   "author": "Ji-ho Lee",
   "authorUrl": "https://github.com/search5",

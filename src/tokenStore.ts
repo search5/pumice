@@ -17,13 +17,16 @@ export async function loadToken(app: App): Promise<string> {
   const secret = app.secretStorage.getSecret(SECRET_ID);
   if (secret) return secret;
 
-  // Deliberately raw localStorage, not App#loadLocalStorage: the legacy value was written by raw
-  // localStorage.setItem() (see git history), which App#saveLocalStorage's vault-scoped key isn't
-  // guaranteed to read back -- this has to match the exact mechanism the old code wrote with.
-  const legacy = localStorage.getItem(LEGACY_LOCAL_STORAGE_KEY);
+  // Routed through App#loadLocalStorage, not raw localStorage -- confirmed on a real Obsidian
+  // instance that the two don't interoperate (App#saveLocalStorage("k", v) actually writes to a
+  // vault-scoped key, observed as "<16-hex-char vault hash>-k"), so this can only ever recover a
+  // token from a version of this plugin that itself wrote here via the same App API -- not the
+  // truly old raw-localStorage.setItem() versions from before that. Kept anyway for the App-API
+  // consistency guideline; genuinely legacy (pre-secretStorage) tokens require a fresh login.
+  const legacy = app.loadLocalStorage(LEGACY_LOCAL_STORAGE_KEY) as string | null;
   if (legacy) {
     app.secretStorage.setSecret(SECRET_ID, legacy);
-    localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+    app.saveLocalStorage(LEGACY_LOCAL_STORAGE_KEY, null);
     return legacy;
   }
 
@@ -32,7 +35,8 @@ export async function loadToken(app: App): Promise<string> {
 
 export async function deleteToken(app: App): Promise<void> {
   app.secretStorage.setSecret(SECRET_ID, "");
-  localStorage.removeItem(LEGACY_LOCAL_STORAGE_KEY);
+  // Same legacy-migration exception as loadToken's comment above.
+  app.saveLocalStorage(LEGACY_LOCAL_STORAGE_KEY, null);
 }
 
 export async function hasToken(app: App): Promise<boolean> {

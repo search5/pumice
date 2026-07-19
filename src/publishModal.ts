@@ -21,7 +21,9 @@ interface DiffItem {
 
 function getPublishFlag(app: App, file: TFile): boolean | null {
   const cache = app.metadataCache.getFileCache(file);
-  const publish = cache?.frontmatter?.publish;
+  // frontmatter values are arbitrary YAML, so FrontMatterCache types them `any` -- annotating
+  // `unknown` here instead keeps that from flowing further than this one comparison.
+  const publish: unknown = cache?.frontmatter?.publish;
   if (publish === true  || publish === "true"  || publish === "yes") return true;
   if (publish === false || publish === "false" || publish === "no")  return false;
   return null;
@@ -1164,7 +1166,7 @@ export class PublishModal extends Modal {
       this.errorMessageEl.hide();
     });
 
-    this.loaderEl = contentEl.createEl("div", { cls: "loading-spinner" });
+    this.loaderEl = contentEl.createDiv({ cls: "loading-spinner" });
     this.loaderEl.show();
 
     let client: SyncClient | null = null;
