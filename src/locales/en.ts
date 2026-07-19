@@ -54,6 +54,8 @@ export const en: Record<string, string> = {
   "plugins.publish.label-status-uploading": "Uploading...",
   "plugins.publish.label-unchanged-files-already-published": "Already published files",
   "plugins.publish.label-visit-site": "You can visit the site here: ",
+  "plugins.publish.msg-set-publish-frontmatter-first":
+    'Add "publish: true" to this file\'s frontmatter before publishing it.',
   "plugins.publish.msg-added-linked-files": "{{count}} linked files were added.",
   "plugins.publish.msg-added-new-password": "Password added.",
   "plugins.publish.msg-folder-excluded": "Removed from included folders.",

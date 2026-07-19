@@ -55,6 +55,8 @@ export const ko: Record<string, string> = {
   "plugins.publish.label-status-uploading": "업로드 중...",
   "plugins.publish.label-unchanged-files-already-published": "이미 게재된 파일",
   "plugins.publish.label-visit-site": "사이트를 여기서 방문할 수 있습니다: ",
+  "plugins.publish.msg-set-publish-frontmatter-first":
+    '게재하기 전에 이 파일의 프론트매터에 "publish: true"를 추가하세요.',
   "plugins.publish.msg-added-linked-files": "{{count}}개의 연결 파일이 추가되었습니다.",
   "plugins.publish.msg-added-new-password": "비밀번호가 추가되었습니다.",
   "plugins.publish.msg-folder-excluded": "게시 포함 폴더에서 제외했습니다.",
