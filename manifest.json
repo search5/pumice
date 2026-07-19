@@ -1,7 +1,7 @@
 {
   "id": "pumice",
   "name": "Pumice",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "minAppVersion": "1.12.7",
   "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
   "author": "Ji-ho Lee",
