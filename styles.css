@@ -539,6 +539,13 @@
   min-height: 50vh;
   max-height: 88vh;
   overflow-y: auto;
+  /* Obsidian's mobile bottom toolbar/tab bar is an overlay, not accounted for by vh units or
+     env(safe-area-inset-bottom) alone (that only covers the OS-level home indicator/gesture
+     area) -- without this, the last visible row (Publish/Cancel, or Done once uploaded) sits
+     exactly at the 88vh line and ends up hidden behind that overlay. The fixed 72px is a rough
+     estimate of that overlay's height; the env() term stacks on top of it for devices that also
+     need the OS safe-area padding. */
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
 }
 
 .grpc-publish-modal .message-container,
