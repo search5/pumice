@@ -549,21 +549,33 @@
   overflow-y: auto;
 }
 
-/* Core's own mobile CSS for .modal-button-container assumes a full-screen mobile modal and
-   "full-bleeds" it to the device's actual viewport edges (fixed/viewport-relative positioning) --
-   fine for core's own modals, which really are full-screen on mobile, but ours is deliberately
-   kept narrower (width: min(720px, 92vw)) even on mobile, so that trick breaks it out past our
-   modal's own right edge instead of the screen's. Reset it back to a normal block that respects
-   our modal's actual width. Confirmed via a real landscape-orientation screenshot: the button row
-   was rendering all the way to the physical screen edge while every other row in the same modal
-   stayed correctly contained. */
+/* Core's mobile CSS full-bleeds .modal-button-container to the device viewport edges (observed:
+   the button row rendering all the way to the physical screen edge, past our modal's own right
+   border, in a real landscape screenshot) -- assuming a full-screen mobile modal, which ours
+   deliberately isn't (kept at width: min(720px, 92vw) so it doesn't stretch edge-to-edge on
+   larger mobile screens like tablets too). Rather than matching our modal's width to core's
+   assumption (which would just trade this problem for "the modal looks wrong on tablets" and is
+   no less fragile to a future core CSS change than this is), assert the exact box model we want
+   directly with !important: contained within our modal, still full-width *of that modal* and
+   still a large stacked touch target, regardless of whatever mechanism core happens to use this
+   version to full-bleed its own modals. */
 .is-mobile .grpc-publish-modal .modal-button-container {
-  position: static;
-  inset: auto;
-  transform: none;
-  width: auto;
-  max-width: 100%;
-  box-sizing: border-box;
+  position: static !important;
+  inset: auto !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  transform: none !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: var(--size-4-2) !important;
+}
+
+.is-mobile .grpc-publish-modal .modal-button-container button {
+  width: 100% !important;
 }
 
 .grpc-publish-modal .message-container,
