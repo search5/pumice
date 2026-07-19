@@ -10,7 +10,9 @@ The goal is to sync instantly, no matter how many files are in the vault.
 - **Server**: Python (`asyncioreactor` + `grpc.aio` + `Twisted`), see
   [pumice-server](https://github.com/search5/pumice-server)
 - **Transport**: gRPC-Web (HTTP/2 multiplexing, bidirectional streaming) — many files are sent
-  concurrently over a single connection instead of one RPC per file
+  concurrently over a single connection instead of one RPC per file. When the server is reachable
+  over TLS, uploads instead stream directly over a single `fetch()` request (no batching,
+  no buffering the whole payload in memory); otherwise they fall back to the gRPC-Web path above.
 - **Auth**: a static token stored in the OS keychain (macOS Keychain / Windows Credential
   Manager / Linux libsecret)
 
@@ -147,6 +149,11 @@ Default exclude patterns (`ignorePatterns` / `publishExcludeFolders`):
 > Every device syncing the same vault needs a folder with the exact same name; a mismatch isn't
 > rejected, it just syncs as an unrelated vault. The settings tab shows the current vault's name for
 > this reason.
+
+> **"Publish current file" requires `publish: true` in the note's frontmatter.** Folder-level
+> inclusion (`publishIncludeFolders`) doesn't need it, but the single-file force-publish action
+> won't upload a file until its frontmatter says so — otherwise a file could go live on the server
+> yet silently fall out of scope on the next folder-wide publish scan, which is frontmatter-driven.
 
 ## Project structure
 
