@@ -86,11 +86,19 @@ git push --follow-tags
 
 ## gRPC-Web 스텁 재생성하기
 
-`src/generated/`(`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`)는 `sync.proto`로부터
-생성됩니다. `npm run dev`/`build`/`lint`를 처음 실행할 때 (`pre*` 스크립트로 연결된
-`scripts/ensure-generated.mjs`를 통해) 자동으로 생성되므로, 새로 클론했을 때 수동 작업이
-필요 없습니다. 다만 이 `pre*` 스크립트들은 `src/generated/`가 없을 때만 생성을 실행하므로,
-`sync.proto`를 수정했다면 다음으로 스텁을 명시적으로 재생성해야 합니다:
+`src/generated/`(`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`, `SyncServiceClientPb.d.ts`)는
+`sync.proto`로부터 생성됩니다. `.js`/`.ts` 구현 파일은 gitignore 대상이고, `npm run dev`/`build`/`lint`를
+처음 실행할 때(`pre*` 스크립트로 연결된 `scripts/ensure-generated.mjs`를 통해) 자동으로 생성되므로
+새로 클론했을 때 수동 작업이 필요 없습니다. 반면 두 `.d.ts` 파일은 저장소에 커밋되어 있습니다
+(`SyncServiceClientPb.d.ts`는 `npm run proto:gen` 과정에서 `.ts`로부터
+`tsc --declaration --emitDeclarationOnly`로 뽑아냅니다) — 이건 의도적인 결정입니다: `npm install`/생성
+과정 없이 이 저장소를 lint/타입체크하는 외부 도구도 `.d.ts`만으로 모든 `pb.*`/`SyncServiceClient`
+참조의 실제 타입을 해석할 수 있게 되고, 그 결과 모든 참조가 `any`로 무너지면서 서로 무관해 보이는
+`no-unsafe-*` 에러 수백 개가 쏟아지는 걸 막을 수 있습니다(로컬에서 확인: `.d.ts`만 있는 상태로
+`eslint .`를 돌리면 이와 관련된 findings가 0개입니다).
+
+이 `pre*` 스크립트들은 `.ts` 구현 파일이 없을 때만 생성을 실행하므로, `sync.proto`를 수정했다면
+스텁을 명시적으로 재생성하고 갱신된 `.d.ts` 파일 2개를 커밋하세요:
 
 ```bash
 npm run proto:gen
