@@ -1,4 +1,3 @@
 node_modules/
-src/generated/
 bin/protoc-gen-grpc-web
 main.js

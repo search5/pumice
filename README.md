@@ -88,10 +88,14 @@ versions, which matters once this plugin is submitted to the Community Plugins l
 ## Regenerating the gRPC-Web stubs
 
 `src/generated/` (`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`) is generated from
-`sync.proto`. It's generated automatically the first time you run `npm run dev`/`build`/`lint`
-(via `scripts/ensure-generated.mjs`, wired up as a `pre*` script), so a fresh clone doesn't need
-a manual step. Those `pre*` scripts only run generation if `src/generated/` is missing though —
-if you modify `sync.proto`, regenerate the stubs explicitly with:
+`sync.proto` and committed to the repo — not gitignored, even though it's derived output.
+This is deliberate: external tools that lint/typecheck this repo (e.g. Obsidian's own plugin
+review) clone it and run straight against `src/` without running `npm install` first, and
+without `src/generated/` present every `pb.*` reference resolves to an unresolvable/`any` type,
+producing a cascade of hundreds of unrelated-looking `no-unsafe-*` lint errors. `scripts/ensure-generated.mjs`
+(wired up as a `pre*` script on `npm run dev`/`build`/`lint`) only regenerates when the directory
+is missing, so a normal clone just uses what's committed. If you modify `sync.proto`, regenerate
+the stubs explicitly and commit the result:
 
 ```bash
 npm run proto:gen
