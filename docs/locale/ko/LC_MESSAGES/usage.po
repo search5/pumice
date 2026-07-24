@@ -1,0 +1,292 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: ko <LL@li.org>\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../usage.rst:2 327bf54efcae41fc99b8da76c212b015
+msgid "Usage"
+msgstr "사용법"
+
+#: ../../usage.rst:5 7df61c289aad42dfaabd19e5c406c06b
+msgid "Connecting to your server"
+msgstr "서버에 연결하기"
+
+#: ../../usage.rst:7 8c5e0c46109643b8849dc8e033c587f8
+msgid ""
+"Open **Settings → Pumice**. The first section covers the connection itself:"
+msgstr "**설정 → Pumice**\\ 를 여세요. 첫 번째 섹션이 연결 자체를 다룹니다:"
+
+#: ../../usage.rst:12 a6e15c22d890456b81f675ec781bde3a
+msgid "Field"
+msgstr "필드"
+
+#: ../../usage.rst:13 ../../usage.rst:49 46ca0b48b762423799f3bd8a1ce7de74
+#: 667cb8d1026d4898b9742886a645e52b
+msgid "Description"
+msgstr "설명"
+
+#: ../../usage.rst:14 dc84cb45e0814e7c9d3ded802aba1f3f
+msgid "User name"
+msgstr "사용자 이름"
+
+#: ../../usage.rst:15 8ca21252788b40cdbcd6ffaf7be6590c
+msgid ""
+"Shown in sync history and version history, to tell devices/people apart."
+msgstr "동기화 히스토리와 버전 히스토리에 표시되어, 기기/사람을 구분하는 데 쓰입니다."
+
+#: ../../usage.rst:16 4cf1a6e92ccd40299f5f809f6a3b102f
+msgid "Device name"
+msgstr "기기 이름"
+
+#: ../../usage.rst:17 96eacc2628984b488ba52c44a01066c9
+msgid "Shown the same way, to tell *this* device apart from your others."
+msgstr "마찬가지로 표시되어, *이* 기기를 다른 기기들과 구분하는 데 쓰입니다."
+
+#: ../../usage.rst:18 18198a6cc8944838982cc301e86c08db
+msgid "Server address"
+msgstr "서버 주소"
+
+#: ../../usage.rst:19 ac13616aea224e35b9f5328f88a0686a
+msgid "Hostname or IP of your pumice-server instance."
+msgstr "pumice-server 인스턴스의 호스트명 또는 IP."
+
+#: ../../usage.rst:20 23c5da56609d46b48585cb68fff453e2
+msgid "Server port"
+msgstr "서버 포트"
+
+#: ../../usage.rst:21 c205b8d960c1467f859d16abcd15fc88
+msgid "Combined sync + HTTP port (``8080`` by default on pumice-server)."
+msgstr "동기화와 HTTP를 겸하는 포트(pumice-server 기본값은 ``8080``)."
+
+#: ../../usage.rst:22 7a4e86b490ee47f7900ddf064a8395f4
+msgid "Use TLS"
+msgstr "TLS 사용"
+
+#: ../../usage.rst:23 7ed35079768a487caf66ba2c3aa4c01c
+msgid ""
+"Enable if your server is reachable over HTTPS. Recommended for anything "
+"beyond localhost — see the TLS note in :doc:`prerequisites`."
+msgstr ""
+"서버가 HTTPS로 연결 가능하다면 활성화하세요. localhost를 벗어나는 환경이라면 권장됩니다 — "
+":doc:`prerequisites`\\ 의 TLS 관련 안내를 참고하세요."
+
+#: ../../usage.rst:27 d189f68e509f427c962eb7f7a4b35db9
+msgid "Authenticating"
+msgstr "인증하기"
+
+#: ../../usage.rst:29 5f518579635e41aba8968774692fa00c
+msgid ""
+"Click **Log in** in the Authentication row. This opens your server's login "
+"page in your system browser; once you sign in there, it hands a device token"
+" back to Obsidian automatically via an ``obsidian://`` callback — there's no"
+" token to copy/paste. The token is stored in Obsidian's own secure secret "
+"storage, never written to your vault or synced anywhere."
+msgstr ""
+"인증(Authentication) 줄에서 **로그인**\\ 을 클릭하세요. 시스템 브라우저에서 서버의 로그인 페이지가 열리고, 거기서 "
+"로그인하면 ``obsidian://`` 콜백을 통해 자동으로 기기 토큰이 Obsidian으로 전달됩니다 — 토큰을 직접 복사/붙여넣기 할"
+" 필요가 없습니다. 토큰은 Obsidian 자체의 보안 저장소에 저장되며, vault에 기록되거나 어디로도 동기화되지 않습니다."
+
+#: ../../usage.rst:35 eba371068b5547e7a1d21a32a048131c
+msgid ""
+"Once a token is set, the row shows **Delete** instead, letting you revoke it"
+" from this device (you can also revoke any device's session from pumice-"
+"server's own device-management UI)."
+msgstr ""
+"토큰이 설정되면 그 줄에 **삭제** 버튼이 대신 나타나서, 이 기기에서 토큰을 폐기할 수 있습니다(pumice-server 자체의 기기"
+" 관리 UI에서 어느 기기의 세션이든 폐기할 수도 있습니다)."
+
+#: ../../usage.rst:39 e011260dba4e4981ad5032489eb6e1c3
+msgid ""
+"Click **Test connection** at any point to confirm the plugin can actually "
+"reach the server with the current settings."
+msgstr "언제든 **연결 테스트**\\ 를 클릭해서 현재 설정으로 플러그인이 실제로 서버에 닿는지 확인할 수 있습니다."
+
+#: ../../usage.rst:43 7450958627a94c9f89b574e8b861fe80
+msgid "What to sync"
+msgstr "무엇을 동기화할지"
+
+#: ../../usage.rst:48 131d6191aa6c4b13ad0f4ee5b49e6137
+msgid "Setting"
+msgstr "설정"
+
+#: ../../usage.rst:50 5ab5407eb9c24024ae4fced52f94a83b
+msgid "Sync files"
+msgstr "파일 동기화"
+
+#: ../../usage.rst:51 29d9c452df1b40bfa277f10ad54a7f68
+msgid ""
+"Syncs files and folders in the vault. You'd normally leave this on; it's "
+"separated out mainly so bookmark-only sync is possible."
+msgstr ""
+"vault의 파일과 폴더를 동기화합니다. 보통은 켜 두시면 되고, 북마크만 동기화하는 것도 가능하도록 따로 분리해둔 설정입니다."
+
+#: ../../usage.rst:53 7eaade392153442e9b449086e9230d19
+msgid "Sync bookmarks"
+msgstr "북마크 동기화"
+
+#: ../../usage.rst:54 74155804da704678b111949c026e3531
+msgid "Syncs Obsidian's own bookmarks (``.obsidian/bookmarks.json``)."
+msgstr "Obsidian 자체 북마크(``.obsidian/bookmarks.json``)를 동기화합니다."
+
+#: ../../usage.rst:55 6420e16ca2c248149eba0c9c0e3d1131
+msgid "Ignore patterns"
+msgstr "무시 패턴"
+
+#: ../../usage.rst:56 9ab0beaf98f94391b66befa273d4582c
+msgid ""
+"Paths excluded from sync, one per line, glob patterns supported. The default"
+" list excludes Obsidian's own workspace/cache state and ``.trash`` — files "
+"that are local-machine-specific or throwaway by nature."
+msgstr ""
+"동기화에서 제외할 경로로, 한 줄에 하나씩 입력하며 glob 패턴을 지원합니다. 기본 목록은 Obsidian 자체의 "
+"workspace/cache 상태와 ``.trash``\\ 를 제외합니다 — 성격상 이 기기에 국한되거나 버려도 되는 파일들입니다."
+
+#: ../../usage.rst:62 3098a3259ef844a78ddac2eafe99181e
+msgid "Running a sync"
+msgstr "동기화 실행하기"
+
+#: ../../usage.rst:64 fbcf9686f12f4aa4822afaf763b6c2c2
+msgid ""
+"**Manually**: the refresh-icon ribbon button, or the **Sync now** command "
+"(Command Palette or **Settings → Pumice → Sync now**)."
+msgstr ""
+"**수동으로**: 새로고침 아이콘 리본 버튼, 또는 **지금 동기화** 명령(커맨드 팔레트 또는 **설정 → Pumice → 지금 "
+"동기화**)."
+
+#: ../../usage.rst:66 cf7a41b3bc8a41c8a07f183500a1bf56
+msgid ""
+"**Automatically**: enable **Auto sync** to run on a timer (interval "
+"configurable, minimum 10 seconds), and/or **Sync on startup** to run once "
+"when Obsidian launches."
+msgstr ""
+"**자동으로**: **자동 동기화**\\ 를 켜면 타이머로 실행되고(주기 설정 가능, 최소 10초), **시작 시 동기화**\\ 를 켜면"
+" Obsidian이 실행될 때 한 번 실행됩니다."
+
+#: ../../usage.rst:69 e72c25675ae84c1d8e8dd5c1f820ae3b
+msgid ""
+"**On edit**: saving a file also schedules a sync a short debounce delay "
+"later, so changes propagate without you having to remember to trigger one."
+msgstr "**편집 시**: 파일을 저장하면 짧은 디바운스 지연 후 동기화가 예약되어, 직접 트리거하지 않아도 변경사항이 전파됩니다."
+
+#: ../../usage.rst:72 a939b877209d49be97051b6331c57af1
+msgid ""
+"A sync walks through, in order: comparing local vs. server state (delta), "
+"reconciling deletions, uploading changed local files, then downloading "
+"changed remote files."
+msgstr ""
+"동기화는 순서대로 진행됩니다: 로컬과 서버 상태 비교(델타), 삭제 항목 반영, 변경된 로컬 파일 업로드, 그다음 변경된 원격 파일 "
+"다운로드."
+
+#: ../../usage.rst:77 41692788ae474f188b040cf28f7a9fb6
+msgid "Conflict resolution"
+msgstr "충돌 해결"
+
+#: ../../usage.rst:79 a7bee38afc3f430c88b8a1bb6b78c424
+msgid ""
+"If a file changed on both sides since the last sync, **Conflict resolution**"
+" decides what happens when the server's copy is about to be downloaded over "
+"a locally-modified file:"
+msgstr ""
+"마지막 동기화 이후 파일이 양쪽에서 모두 변경됐다면, 서버의 사본이 로컬에서 수정된 파일 위에 덮어써지려 할 때 무슨 일이 일어날지를 "
+"**충돌 해결**\\ 이 결정합니다:"
+
+#: ../../usage.rst:86 41af137b1d5040a0868362e5c46c8bf3
+msgid "Mode"
+msgstr "모드"
+
+#: ../../usage.rst:87 16e58f8ab8e34c7bb34930d39382f889
+msgid "Behavior"
+msgstr "동작"
+
+#: ../../usage.rst:88 7eab9a4e8a7845a9a80d990c79002aed
+msgid "Manual (default)"
+msgstr "수동 (기본값)"
+
+#: ../../usage.rst:89 afa1e787f21140478be4f84c0b3dff1c
+msgid ""
+"Your local copy is backed up alongside the original, as ``<name>.sync-"
+"conflict-<timestamp>.<ext>``, before the server's version is written in. "
+"Nothing is silently lost — review the conflict copy and merge/discard by "
+"hand."
+msgstr ""
+"서버 버전이 기록되기 전에, 로컬 사본이 원본 옆에 ``<이름>.sync-conflict-<타임스탬프>.<확장자>``\\ 로 백업됩니다."
+" 조용히 사라지는 내용은 없습니다 — 충돌 사본을 직접 검토해서 병합하거나 버리면 됩니다."
+
+#: ../../usage.rst:93 992727571ad4444ca4ce6e7ad794733d
+msgid "Server wins"
+msgstr "서버 우선"
+
+#: ../../usage.rst:94 2885979ee5754a9a837cbeab0145828e
+msgid ""
+"The server's version simply overwrites the local one, no conflict copy."
+msgstr "서버 버전이 로컬 버전을 그냥 덮어씁니다. 충돌 사본은 만들어지지 않습니다."
+
+#: ../../usage.rst:95 ac3d382fe7ee402ba907d7f911bd85f0
+msgid "Client wins"
+msgstr "클라이언트 우선"
+
+#: ../../usage.rst:96 474f47b628c0443ca4f21f06cb753fc6
+msgid ""
+"The local version is kept as-is; the incoming server version for that file "
+"is skipped for this sync."
+msgstr "로컬 버전이 그대로 유지되고, 이번 동기화에서는 그 파일의 서버 버전을 건너뜁니다."
+
+#: ../../usage.rst:100 5567a9210c604d3c840b94d7629b0036
+msgid "End-to-end encryption (E2EE)"
+msgstr "종단간 암호화 (E2EE)"
+
+#: ../../usage.rst:102 f085ed93ec984482a9bebb4b408047af
+msgid ""
+"Enabling **End-to-end encryption** encrypts file contents with a symmetric "
+"key (AES-256-GCM) on your device before they're ever sent to the server — "
+"the server only ever sees ciphertext. Every device syncing this vault must "
+"be configured with the same **Sync encryption password**; a mismatch means "
+"every device just downloads content it can't decrypt."
+msgstr ""
+"**종단간 암호화**\\ 를 켜면 파일 내용이 서버로 보내지기 전에 기기에서 대칭 키(AES-256-GCM)로 암호화됩니다 — 서버는 "
+"암호문만 보게 됩니다. 이 vault를 동기화하는 모든 기기는 같은 **동기화 암호화 비밀번호**\\ 로 설정되어야 합니다; 비밀번호가 "
+"다르면 모든 기기가 복호화할 수 없는 내용을 다운로드하게 됩니다."
+
+#: ../../usage.rst:108 c3a802258d744715981983f6e1f91592
+msgid ""
+"The password itself is stored in Obsidian's secret storage, like the auth "
+"token — it is never written into the vault's synced settings, so it isn't "
+"propagated to other devices automatically. You need to enter it yourself on "
+"each device the first time."
+msgstr ""
+"이 비밀번호 자체는 인증 토큰과 마찬가지로 Obsidian의 보안 저장소에 저장됩니다 — vault의 동기화되는 설정에는 절대 기록되지 "
+"않으므로, 다른 기기로 자동 전파되지 않습니다. 각 기기에서 처음 한 번은 직접 입력해야 합니다."
+
+#: ../../usage.rst:115 3be1c44e56a94b078321127e4cf4f16a
+msgid ""
+"Turning E2EE on or off after files are already synced doesn't retroactively "
+"re-encrypt/decrypt what's already on the server. Treat it as a decision to "
+"make before the first sync of a given vault, not something to toggle back "
+"and forth."
+msgstr ""
+"파일이 이미 동기화된 뒤에 E2EE를 켜거나 끄더라도 서버에 이미 있는 내용이 소급해서 재암호화/복호화되지는 않습니다. 이건 이리저리 "
+"껐다 켰다 할 설정이 아니라, 해당 vault의 첫 동기화 전에 내려야 하는 결정으로 취급하세요."
+
+#: ../../usage.rst:120 7b0f9cffd4654ccf9eedda27b65f4315
+msgid ""
+"For local snapshots and version history — Pumice's two complementary safety "
+"nets around sync — see :doc:`history`. For selectively publishing notes to a"
+" public site, see :doc:`publish`."
+msgstr ""
+"로컬 스냅샷과 버전 히스토리 — 동기화를 둘러싼 Pumice의 두 가지 상호 보완적 안전망 — 에 대해서는 :doc:`history`\\"
+" 를 참고하세요. 노트를 공개 사이트에 선택적으로 게재하는 방법은 :doc:`publish`\\ 를 참고하세요."

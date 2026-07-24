@@ -1,0 +1,267 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 01:28+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: ko\n"
+"Language-Team: ko <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../publish.rst:2 f57a73f29dd145e880e951e738a9df80
+msgid "Publishing"
+msgstr "게재하기"
+
+#: ../../publish.rst:4 bb6da800b00f421294dc5a5ebe3f2482
+msgid ""
+"Pumice can selectively publish notes to a website served directly by "
+"pumice-server, at ``http://<server>/publish/<username>/<vault>/`` (or "
+"``https://`` if TLS is enabled) — no separate hosting, no third-party "
+"publish service."
+msgstr ""
+"Pumice는 노트를 pumice-server가 직접 서빙하는 웹사이트에 "
+"``http://<server>/publish/<username>/<vault>/``(TLS가 켜져 있으면 "
+"``https://``)로 선택적으로 게재할 수 있습니다 — 별도의 호스팅도, 서드파티 게재 서비스도 필요 없습니다."
+
+#: ../../publish.rst:10 6bfe0471a8654933839fe99caf5cfeb4
+msgid "Opening the Publish modal"
+msgstr "게재 모달 열기"
+
+#: ../../publish.rst:12 c8bd5681d7574cc2b8a5f38c20be0cf5
+msgid ""
+"The **paper-plane** ribbon icon, or the **Publish changes** command, "
+"opens the full review screen (see below) for the whole vault."
+msgstr ""
+"**종이비행기** 리본 아이콘, 또는 **변경사항 게재** 명령을 실행하면 vault 전체에 대한 전체 검토 화면(아래 참고)이 "
+"열립니다."
+
+#: ../../publish.rst:14 a479baa3a80242f9983b7a806fc48626
+msgid ""
+"Right-clicking a single file and choosing **Publish current file** opens "
+"the same modal already scoped to just that one file, skipped straight to "
+"ready-to-publish (see :ref:`Force-publishing a single file` below)."
+msgstr ""
+"파일 하나를 우클릭해서 **현재 파일 게재**\\ 를 선택하면, 그 파일 하나로만 범위가 좁혀진 같은 모달이 게재 준비 상태로 바로"
+" 열립니다(아래 :ref:`Force-publishing a single file` 참고)."
+
+#: ../../publish.rst:17 065a63b992b944f4806bc59aa7f0817b
+msgid ""
+"Right-clicking a **folder** shows an **Included folders** toggle — a "
+"quick way to add/remove that folder from ``publishIncludeFolders`` "
+"without a trip through the settings modal."
+msgstr ""
+"**폴더**\\ 를 우클릭하면 **포함된 폴더** 토글이 나타납니다 — 설정 모달을 거치지 않고 그 폴더를 "
+"``publishIncludeFolders``\\ 에 추가/제거하는 빠른 방법입니다."
+
+#: ../../publish.rst:22 7a6cc020fce34b78b0d14cda3260a3fd
+msgid "Which files are eligible"
+msgstr "어떤 파일이 대상이 되는가"
+
+#: ../../publish.rst:24 a3d44690e37740d692e8804322091421
+msgid "A note ends up in scope for publishing based on, in priority order:"
+msgstr "노트가 게재 대상이 되는지는 다음 우선순위로 결정됩니다:"
+
+#: ../../publish.rst:26 cac1764b5f194a72b5efe1e0d71ebbc9
+msgid ""
+"**Excluded folders** always win — a note under an excluded folder is "
+"never considered, no matter what its frontmatter says."
+msgstr "**제외된 폴더**\\ 가 항상 우선합니다 — 제외된 폴더 아래의 노트는 프론트매터가 뭐라고 되어 있든 절대 고려되지 않습니다."
+
+#: ../../publish.rst:28 2d6773de9c1c4c25b9842b8deb6b7185
+msgid ""
+"**Explicit frontmatter** — if a note has ``publish: true`` or ``publish: "
+"false`` in its YAML frontmatter, that decides it outright, overriding "
+"whether it happens to sit under an included/excluded folder."
+msgstr ""
+"**명시적 프론트매터** — 노트의 YAML 프론트매터에 ``publish: true`` 또는 ``publish: false``\\"
+" 가 있으면, 그게 포함/제외 폴더 아래에 있는지 여부를 무시하고 그대로 결정됩니다."
+
+#: ../../publish.rst:31 8bcf970543754a6cb089c9e79d767abd
+msgid ""
+"Otherwise, **included folders** decide: a note under one is eligible, a "
+"note that's under neither an included nor excluded folder is not."
+msgstr ""
+"그 외의 경우엔 **포함된 폴더**\\ 가 결정합니다: 포함된 폴더 아래의 노트는 대상이 되고, 포함/제외 어느 쪽에도 속하지 않은"
+" 노트는 대상이 되지 않습니다."
+
+#: ../../publish.rst:34 99e9e4de39184ebfafc9f108d0591df9
+msgid ""
+"Included/excluded folders are managed under **Settings → Pumice** or via "
+"the folder right-click menu; the same default exclude list used for sync "
+"(``.obsidian/workspace``, ``.trash``, etc. — see :doc:`usage`) also "
+"applies to publishing by default."
+msgstr ""
+"포함/제외 폴더는 **설정 → Pumice**\\ 나 폴더 우클릭 메뉴에서 관리합니다; 동기화에 쓰이는 기본 제외 "
+"목록(``.obsidian/workspace``, ``.trash`` 등 — :doc:`usage` 참고)이 게재에도 기본으로 "
+"똑같이 적용됩니다."
+
+#: ../../publish.rst:40 e9216548ed1d4b85b1b7a46cb5af4804
+msgid "Force-publishing a single file"
+msgstr "단일 파일 강제 게재하기"
+
+#: ../../publish.rst:42 748fa10c6e424af880dcdbbe12629c6f
+msgid ""
+"**Publish current file** is an explicit, deliberate action — the file "
+"uploads regardless of folder inclusion rules. It does, however, require "
+"the frontmatter to actually say ``publish: true`` first:"
+msgstr ""
+"**현재 파일 게재**\\ 는 명시적이고 의도적인 동작입니다 — 폴더 포함 규칙과 무관하게 파일이 업로드됩니다. 다만 먼저 "
+"프론트매터에 실제로 ``publish: true``\\ 가 있어야 합니다:"
+
+#: ../../publish.rst:48 d47b7f34189c475b8e72015b6b8d9c33
+msgid ""
+"If the file doesn't already have ``publish: true`` in its frontmatter, "
+"**Publish current file** shows a message asking you to add it, instead of"
+" publishing. This is deliberate, not a limitation: publishing is "
+"frontmatter-driven everywhere else in the plugin, so a file published "
+"this way *without* that frontmatter would go live on the server, yet "
+"silently fall out of scope the next time a folder-wide **Publish "
+"changes** scan runs (since that scan only sees frontmatter/folder-based "
+"eligibility) — effectively becoming impossible to update again through "
+"the normal UI. Setting the frontmatter first keeps the file consistently "
+"in scope going forward."
+msgstr ""
+"파일에 아직 ``publish: true``\\ 가 없으면, **현재 파일 게재**\\ 는 게재하는 대신 프론트매터에 추가하라는 "
+"메시지를 보여줍니다. 이건 제약이 아니라 의도된 동작입니다: 플러그인의 다른 모든 곳에서 게재는 프론트매터 기반으로 결정되므로, 그"
+" 프론트매터 *없이* 이런 식으로 게재된 파일은 서버에는 게재되어 있으면서, 다음번 폴더 전체 **변경사항 게재** "
+"스캔(프론트매터/폴더 기반 대상 여부만 보는)이 실행될 때 조용히 범위 밖으로 빠져서 — 사실상 일반 UI로는 다시 업데이트할 수 "
+"없게 됩니다. 프론트매터를 먼저 설정해두면 앞으로도 계속 일관되게 범위 안에 유지됩니다."
+
+#: ../../publish.rst:59 e1af375bd7204ad189f807edc199039c
+msgid ""
+"Folder-level inclusion doesn't have this requirement — it's already "
+"considered an explicit, deliberate mechanism on its own."
+msgstr "폴더 단위 포함에는 이 요구사항이 없습니다 — 그 자체로 이미 명시적이고 의도적인 메커니즘으로 취급되기 때문입니다."
+
+#: ../../publish.rst:63 4a59010e77c043ca8f400425a86c9cc8
+msgid "The review screen"
+msgstr "검토 화면"
+
+#: ../../publish.rst:65 25b4de4deef440ad8257ef8391913e51
+msgid ""
+"Before anything uploads, you get a tree view (folders before files, "
+"matching Obsidian's own file explorer convention) of every eligible "
+"change, grouped into **New files**, **Changed files**, and **Already "
+"published files** (unchanged, or marked for deletion). "
+"Checking/unchecking a folder toggles every file under it at once; a "
+"partially-checked folder shows an indeterminate state."
+msgstr ""
+"업로드되기 전에, 대상이 되는 모든 변경사항을 트리 뷰로 보여줍니다(Obsidian 자체 파일 탐색기 관례에 맞춰 폴더가 파일보다 "
+"먼저 표시됨) — **새 파일**, **변경된 파일**, **이미 게재된 파일** (변경 없음, 또는 삭제 예정)로 그룹화됩니다. "
+"폴더를 체크/체크 해제하면 그 아래 모든 파일이 한 번에 전환되고, 일부만 체크된 폴더는 중간 상태로 표시됩니다."
+
+#: ../../publish.rst:72 f619316f27af48d0869465fa7c6a4964
+msgid "A few extras on this screen:"
+msgstr "이 화면의 추가 기능들:"
+
+#: ../../publish.rst:74 bfbbab949fd44c13a087d03c8bbb1958
+msgid "**Search** filters the tree by filename as you type."
+msgstr "**검색**\\ 은 입력하는 대로 파일명으로 트리를 필터링합니다."
+
+#: ../../publish.rst:75 6419248015bd4c34ad548b047bf844b0
+msgid ""
+"**Include linked files** walks the wikilinks/embeds of your currently "
+"checked files and checks anything they link to as well, so you don't have"
+" to hunt down every image or note a page references by hand."
+msgstr ""
+"**연결된 파일 포함**\\ 은 현재 체크된 파일들의 위키링크/임베드를 따라가서 링크된 대상도 함께 체크해줍니다 — 페이지가 "
+"참조하는 이미지나 노트를 일일이 손으로 찾을 필요가 없습니다."
+
+#: ../../publish.rst:78 eaab619f52514a0e895f916a7df819f0
+msgid ""
+"The **filter** icon opens **Publish filters**, the same included/excluded"
+" folder settings described above, without leaving the modal."
+msgstr "**필터** 아이콘을 누르면 모달을 벗어나지 않고 위에서 설명한 것과 같은 포함/제외 폴더 설정인 **게재 필터**\\ 가 열립니다."
+
+#: ../../publish.rst:81 a17dd6a205fd417e80fc7868b85e4d12
+msgid ""
+"Click **Publish** to upload every checked item, or **Cancel** to back out"
+" without changing anything."
+msgstr "**게시**\\ 를 클릭하면 체크된 모든 항목이 업로드되고, **취소**\\ 를 클릭하면 아무것도 바꾸지 않고 빠져나갑니다."
+
+#: ../../publish.rst:86 883c1be057a241a087f9b9e622b0db9f
+msgid ""
+"Large uploads stream directly to the server instead of being split into "
+"batches, when your server is reachable over TLS (see :doc:`architecture` "
+"for how this works and which clients support it). Either way, nothing "
+"about what you see in the review screen changes — this only affects "
+"transfer efficiency for big vaults."
+msgstr ""
+"서버가 TLS로 연결 가능하면, 큰 업로드는 배치로 나뉘지 않고 서버로 직접 스트리밍됩니다(어떻게 동작하는지, 어떤 클라이언트가 "
+"지원하는지는 :doc:`architecture` 참고). 어느 쪽이든 검토 화면에서 보이는 건 전혀 달라지지 않습니다 — 큰 "
+"vault의 전송 효율에만 영향을 줍니다."
+
+#: ../../publish.rst:93 df598d13ddf94e3aa85ada7f33de8325
+msgid "Site options"
+msgstr "사이트 옵션"
+
+#: ../../publish.rst:95 3cb6e834c26f4ce0871a3ce5f991f866
+msgid "Opened via the site-name link at the top of the review screen:"
+msgstr "검토 화면 상단의 사이트 이름 링크를 통해 열립니다:"
+
+#: ../../publish.rst:100 6ba82e05781447999c250e96ab27be7a
+msgid "Option"
+msgstr "옵션"
+
+#: ../../publish.rst:101 ec6b79b81e9c4322968d7dfdf9b8d3a6
+msgid "What it does"
+msgstr "하는 일"
+
+#: ../../publish.rst:102 7239c6b331fc4e50b2bbed82f0265936
+msgid "Custom slug"
+msgstr "커스텀 슬러그"
+
+#: ../../publish.rst:103 8d70c3faa759411da9e3c022a5606bfc
+msgid ""
+"Changes the vault's segment of the published URL from its raw vault name "
+"to something else you choose."
+msgstr "게재된 URL에서 vault 이름 그대로였던 부분을 원하는 다른 값으로 바꿉니다."
+
+#: ../../publish.rst:105 10a765a0c692445b9f374be3f436ec28
+msgid "Password protection"
+msgstr "비밀번호 보호"
+
+#: ../../publish.rst:106 bc172559b6ef4848a4f8930086207795
+msgid "Add one or more passwords; visitors must enter one to view the site."
+msgstr "비밀번호를 하나 이상 추가하면, 방문자는 사이트를 보려면 그중 하나를 입력해야 합니다."
+
+#: ../../publish.rst:107 8ba2765febe14a2d884a0ae876b76e2d
+msgid "Sharing"
+msgstr "공유"
+
+#: ../../publish.rst:108 f3da395bf947402b9565fcdd032446e3
+msgid ""
+"Invite specific people by email to view the site without a password — "
+"they accept the invite once, then it just works for them going forward. "
+"You can see pending vs. accepted invites here, and revoke access at any "
+"time."
+msgstr ""
+"이메일로 특정 사람을 초대하면 비밀번호 없이 사이트를 볼 수 있습니다 — 한 번 초대를 수락하면 이후로는 그냥 계속 접근할 수 "
+"있습니다. 여기서 대기 중인 초대와 수락된 초대를 확인할 수 있고, 언제든 접근 권한을 취소할 수 있습니다."
+
+#: ../../publish.rst:114 9d36fc81b02644a8aca6a7144f043bbe
+msgid "Removing content"
+msgstr "콘텐츠 제거하기"
+
+#: ../../publish.rst:116 0efca0b5cc6b4d32ba662631702de53f
+msgid ""
+"A file that falls out of eligibility — deleted locally, moved out of an "
+"included folder, or switched to ``publish: false`` — shows up in the "
+"review screen as **to delete** rather than silently lingering on the "
+"server. Check it like any other item and click **Publish** to remove it "
+"from the live site."
+msgstr ""
+"대상에서 벗어난 파일 — 로컬에서 삭제됐거나, 포함된 폴더 밖으로 이동했거나, ``publish: false``\\ 로 바뀐 경우 "
+"— 은 서버에 조용히 남아있는 대신 검토 화면에 **삭제 예정**\\ 으로 표시됩니다. 다른 항목과 마찬가지로 체크하고 "
+"**게시**\\ 를 클릭하면 실제 사이트에서 제거됩니다."
+

@@ -1,0 +1,146 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: ko <LL@li.org>\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../installation.rst:2 aaf4cb6f40ff4d88a8e9dee6afad315b
+msgid "Installation"
+msgstr "설치"
+
+#: ../../installation.rst:4 6499c095f1ca4acc98cc38057cdf8058
+msgid ""
+"Make sure you have completed the steps in :doc:`prerequisites` first — in "
+"particular, you'll need a running pumice-server instance and an account on "
+"it before the plugin is useful."
+msgstr ""
+"먼저 :doc:`prerequisites`\\ 의 단계를 완료했는지 확인하세요 — 특히 실행 중인 pumice-server 인스턴스와 그"
+" 서버의 계정이 있어야 플러그인을 쓸 수 있습니다."
+
+#: ../../installation.rst:8 e979fdfebdf240b29e44baf871972014
+msgid ""
+"**Pumice** can be installed in two ways: from Obsidian's Community Plugins "
+"list, or by cloning the source repository and building it yourself."
+msgstr ""
+"**Pumice**\\ 는 두 가지 방법으로 설치할 수 있습니다: Obsidian의 커뮤니티 플러그인 목록에서 설치하거나, 소스 저장소를"
+" 클론해서 직접 빌드하는 방법입니다."
+
+#: ../../installation.rst:12 19562f1c68e243a587e0df122fc3fc43
+msgid "Method 1 — Install from Community Plugins"
+msgstr "방법 1 — 커뮤니티 플러그인에서 설치"
+
+#: ../../installation.rst:14 836951c0a7ee40e0b27fa5e51f46ab4a
+msgid "This is the simplest method for most users."
+msgstr "대부분의 사용자에게 가장 간단한 방법입니다."
+
+#: ../../installation.rst:16 ba8402ae766f4ca191acd730b46fb8da
+msgid "Open Obsidian and go to **Settings → Community plugins**."
+msgstr "Obsidian을 열고 **설정 → 커뮤니티 플러그인**\\ 으로 이동하세요."
+
+#: ../../installation.rst:17 8d6df54d086e41c9a46c39ee3081dbbd
+msgid "Make sure community plugins are enabled, then click **Browse**."
+msgstr "커뮤니티 플러그인이 활성화되어 있는지 확인한 뒤 **찾아보기**\\ 를 클릭하세요."
+
+#: ../../installation.rst:18 6f59bf27ac0f43be87cda6d598685f7a
+msgid "Search for ``Pumice``, open it, and click **Install**."
+msgstr "``Pumice``\\ 를 검색해서 열고 **설치**\\ 를 클릭하세요."
+
+#: ../../installation.rst:19 f02d807242d04f55967cf804215ee6c1
+msgid "Once installed, click **Enable**."
+msgstr "설치되면 **활성화**\\ 를 클릭하세요."
+
+#: ../../installation.rst:23 f22ce1cc651846c48214bd8e125dcbad
+msgid ""
+"Pumice has not yet been manually reviewed by the Obsidian team (this shows "
+"up as a notice in the plugin's listing). This doesn't affect functionality —"
+" it's a status of the community review queue, not a warning about the plugin"
+" itself."
+msgstr ""
+"Pumice는 아직 Obsidian 팀의 수동 심사를 받지 않았습니다(플러그인 목록에 안내 문구로 표시됩니다). 이는 기능에는 영향을 "
+"주지 않습니다 — 플러그인 자체에 대한 경고가 아니라 커뮤니티 심사 대기열의 상태일 뿐입니다."
+
+#: ../../installation.rst:29 014e89f7ca8b4772bc45665e000cff8e
+msgid "Method 2 — Clone the Git repository and build from source"
+msgstr "방법 2 — Git 저장소를 클론해서 직접 빌드"
+
+#: ../../installation.rst:31 18bafde5ea5e4046ac8cbca5cec50120
+msgid ""
+"Use this method if you want to build from a specific commit, contribute to "
+"the plugin, or install it on a device without access to Community Plugins "
+"(for example, to test an unreleased change)."
+msgstr ""
+"특정 커밋에서 빌드하고 싶거나, 플러그인 개발에 기여하고 싶거나, 커뮤니티 플러그인에 접근할 수 없는 기기에 설치해야 할 때(예: 아직 "
+"릴리스되지 않은 변경사항 테스트) 이 방법을 사용하세요."
+
+#: ../../installation.rst:35 1c0a3d07590e427f8ff1c400ceb69cb5
+msgid ""
+"**Requirements:** `Node.js <https://nodejs.org/>`_ (with npm) and ``protoc``"
+" (the plugin talks to pumice-server over gRPC-Web, generated from "
+"``sync.proto``)."
+msgstr ""
+"**요구 사항:** `Node.js <https://nodejs.org/>`_ (npm 포함)와 ``protoc``(플러그인이 "
+"pumice-server와 gRPC-Web으로 통신하며, ``sync.proto``\\ 로부터 생성됩니다)."
+
+#: ../../installation.rst:46 80d277b9564c4f3d8ccb8da6693a65e4
+msgid ""
+"``npm run build`` produces ``main.js``, alongside the repo's existing "
+"``manifest.json`` and ``styles.css``. Copy all three into "
+"``<vault>/.obsidian/plugins/pumice/`` (create the folder if it doesn't "
+"exist), then restart Obsidian and enable Pumice under **Settings → Community"
+" plugins**."
+msgstr ""
+"``npm run build``\\ 는 저장소에 이미 있는 ``manifest.json``, ``styles.css``\\ 와 함께 "
+"``main.js``\\ 를 만들어냅니다. 이 세 파일을 ``<vault>/.obsidian/plugins/pumice/``\\ 에 "
+"복사한 뒤(폴더가 없으면 새로 만드세요), Obsidian을 재시작하고 **설정 → 커뮤니티 플러그인**\\ 에서 Pumice를 "
+"활성화하세요."
+
+#: ../../installation.rst:54 af1c85c293b24cd792b682ec025af790
+msgid ""
+"For iterative development, ``npm run dev`` rebuilds ``main.js`` on every "
+"file change — combine it with Obsidian's own plugin reload (or a helper "
+"plugin like Hot Reload) instead of restarting Obsidian each time."
+msgstr ""
+"반복적인 개발 작업에는 ``npm run dev``\\ 가 파일이 바뀔 때마다 ``main.js``\\ 를 다시 빌드해줍니다 — 매번 "
+"Obsidian을 재시작하는 대신 Obsidian 자체의 플러그인 리로드 기능(또는 Hot Reload 같은 보조 플러그인)과 함께 "
+"쓰세요."
+
+#: ../../installation.rst:59 f9d0d533ce1247d7865945eeb82cf04c
+msgid "Updating"
+msgstr "업데이트하기"
+
+#: ../../installation.rst:61 0f48fb6493c54368a77b26fcdb45a31d
+msgid ""
+"If you installed via Community Plugins (Method 1), Obsidian will surface "
+"available updates in **Settings → Community plugins** the same way it does "
+"for any other plugin."
+msgstr ""
+"커뮤니티 플러그인(방법 1)으로 설치했다면, 다른 플러그인과 마찬가지로 Obsidian이 **설정 → 커뮤니티 플러그인**\\ 에서 사용"
+" 가능한 업데이트를 보여줍니다."
+
+#: ../../installation.rst:65 ecd5a6e686774e6baf77dbc47a8e5798
+msgid ""
+"If you installed from source (Method 2), keep the plugin up to date by "
+"pulling the latest changes and rebuilding:"
+msgstr "소스에서 설치했다면(방법 2), 최신 변경사항을 pull 받고 다시 빌드해서 플러그인을 최신 상태로 유지하세요:"
+
+#: ../../installation.rst:73 69f9c3a2901f4cc99f3dc2b788914816
+msgid "Then copy the three files over again and restart Obsidian."
+msgstr "그 다음 세 파일을 다시 복사하고 Obsidian을 재시작하세요."
+
+#: ../../installation.rst:75 9b16fc868d12490ebf1c1f1870435a69
+msgid "Once installed, continue to :doc:`usage` to connect to your server."
+msgstr "설치가 끝나면 :doc:`usage`\\ 로 넘어가서 서버에 연결하세요."

@@ -1,0 +1,136 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: ko <LL@li.org>\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../prerequisites.rst:2 422a1d0c20924489b5e57991317dd995
+msgid "Prerequisites"
+msgstr "사전 요구 사항"
+
+#: ../../prerequisites.rst:4 a2952fe3cdaf433fb026dbd1af3fc6bf
+msgid "Before installing the plugin, make sure the following are in place."
+msgstr "플러그인을 설치하기 전에, 다음 사항들이 준비되어 있는지 확인하세요."
+
+#: ../../prerequisites.rst:7 27d88d5da0c4423ab6de97dce8226a98
+msgid "A running pumice-server instance"
+msgstr "실행 중인 pumice-server 인스턴스"
+
+#: ../../prerequisites.rst:9 42ff507b36394632846c13acfbc9fa29
+msgid ""
+"Pumice is a client only — it needs a `pumice-server "
+"<https://github.com/search5/pumice-server>`_ instance to sync with, and "
+"there is no hosted/managed option. You (or someone on your team) must run "
+"one yourselves."
+msgstr ""
+"Pumice는 클라이언트일 뿐입니다 — 동기화할 `pumice-server "
+"<https://github.com/search5/pumice-server>`_ 인스턴스가 필요하고, 별도의 호스팅/관리형 옵션은 "
+"없습니다. 여러분(또는 팀의 누군가)이 직접 실행해야 합니다."
+
+#: ../../prerequisites.rst:13 0541e54074ca4c589e71fbdff4a0caf6
+msgid ""
+"See pumice-server's own README for setup (Docker image on GHCR, or run "
+"directly with ``uv``). Once it's running, you'll need:"
+msgstr ""
+"설정 방법은 pumice-server 자체 README를 참고하세요(GHCR의 Docker 이미지, 또는 ``uv``\\ 로 직접 "
+"실행). 서버가 뜨면 다음이 필요합니다:"
+
+#: ../../prerequisites.rst:16 d3fa0fa97ed2492693ea5a7b4a6384ac
+msgid "The server's host/address and port."
+msgstr "서버의 호스트/주소와 포트."
+
+#: ../../prerequisites.rst:17 297c40e424cc48c5a323d1a79719afbd
+msgid ""
+"An account on that server. New accounts are created by an admin (via the "
+"admin dashboard or the API) — there's no self-service sign-up."
+msgstr "해당 서버의 계정. 새 계정은 관리자가(관리자 대시보드나 API를 통해) 생성합니다 — 자체 회원가입 기능은 없습니다."
+
+#: ../../prerequisites.rst:21 30b348ffbe334371be7a8d37a3bc563b
+msgid "Obsidian 1.12.7 or later"
+msgstr "Obsidian 1.12.7 이상"
+
+#: ../../prerequisites.rst:23 468e37dc018746ae8ec5c7605fd754b1
+msgid ""
+"Pumice's settings tab uses Obsidian's declarative settings API where "
+"available (1.13.0+), with a classic fallback UI for versions between 1.12.7 "
+"and 1.13.0. Check your Obsidian version under **Settings → About**, and "
+"update if needed."
+msgstr ""
+"Pumice의 설정 탭은 가능한 경우(1.13.0+) Obsidian의 선언형 설정 API를 사용하며, 1.12.7~1.13.0 사이 "
+"버전에서는 예전 방식의 폴백 UI를 씁니다. **설정 → 정보**\\ 에서 Obsidian 버전을 확인하고, 필요하면 업데이트하세요."
+
+#: ../../prerequisites.rst:29 53afe4733a9348f7b5f3b1f41137ef86
+msgid ""
+"**Mobile users:** Obsidian's desktop and mobile apps don't always update at "
+"the same pace, and app-store rollout can lag behind the desktop release. If "
+"a Pumice update fails to install on your phone/tablet, check **Settings → "
+"About** there specifically — you may need to update Obsidian itself (not "
+"just Pumice) first."
+msgstr ""
+"**모바일 사용자:** Obsidian의 데스크톱과 모바일 앱은 항상 같은 속도로 업데이트되지 않으며, 앱스토어 배포가 데스크톱 "
+"릴리스보다 늦어질 수 있습니다. 휴대폰/태블릿에서 Pumice 업데이트가 실패한다면, 그 기기의 **설정 → 정보**\\ 를 확인해 "
+"보세요 — Pumice가 아니라 Obsidian 자체를 먼저 업데이트해야 할 수 있습니다."
+
+#: ../../prerequisites.rst:35 9d4d0aa95c694aeb9dade3f2b417e8e5
+msgid "Network reachability"
+msgstr "네트워크 도달 가능성"
+
+#: ../../prerequisites.rst:37 8c2806d69ecf41bfa417a02df58419e8
+msgid ""
+"The device running Obsidian needs to be able to reach the server's host/port"
+" — same LAN, VPN, or a public address, depending on how you've deployed "
+"pumice-server. If you're syncing from outside your home/office network, "
+"you'll need the server reachable from the internet (directly, via VPN, or "
+"behind a reverse proxy)."
+msgstr ""
+"Obsidian이 실행되는 기기가 서버의 호스트/포트에 접근할 수 있어야 합니다 — pumice-server를 어떻게 배포했는지에 따라 "
+"같은 LAN, VPN, 또는 공인 주소입니다. 집/사무실 네트워크 바깥에서 동기화한다면, 서버가 인터넷에서 접근 가능해야 합니다(직접, "
+"VPN 경유, 또는 리버스 프록시 뒤에서)."
+
+#: ../../prerequisites.rst:45 77706e8c2732435399ec928ff24b5edf
+msgid ""
+"**TLS is optional but recommended for anything beyond localhost**, and it "
+"unlocks an additional feature: when the server is reachable over TLS, large "
+"uploads stream directly instead of being split into batches (see "
+":doc:`architecture`). Without TLS, sync and publish both still work fully — "
+"uploads just fall back to the batched path."
+msgstr ""
+"**TLS는 선택 사항이지만 localhost를 벗어나는 환경이라면 권장**\\ 되며, 추가 기능도 열어줍니다: 서버가 TLS로 연결 "
+"가능하면 큰 업로드가 배치로 나뉘지 않고 직접 스트리밍됩니다(:doc:`architecture` 참고). TLS가 없어도 동기화와 게재 "
+"모두 완전히 동작합니다 — 업로드만 배치 방식으로 폴백할 뿐입니다."
+
+#: ../../prerequisites.rst:52 183c5557b69d413ba7a5b75e719fb2ba
+msgid "A quick mental model before you dive in"
+msgstr "시작하기 전에 알아두면 좋은 핵심 개념"
+
+#: ../../prerequisites.rst:54 f4ae15f4fc1e4e64a5498502db1e948d
+msgid ""
+"**The vault's folder name is its identity on the server.** There's no "
+"separate vault ID — the vault's folder name is used as-is to key everything "
+"server-side (sync, publish, version history). Every device syncing the same "
+"vault needs a folder with the exact same name; a mismatch isn't rejected, it"
+" just syncs as an unrelated vault. Keep this in mind when setting up a "
+"second device."
+msgstr ""
+"**vault의 폴더 이름이 곧 서버상의 identity입니다.** 별도의 vault ID는 없습니다 — vault의 폴더 이름이 서버 "
+"쪽에서(동기화, 게재, 버전 히스토리) 모든 걸 키로 삼는 데 그대로 쓰입니다. 같은 vault를 동기화하는 모든 기기는 정확히 같은 "
+"이름의 폴더를 써야 합니다. 이름이 다르면 거부되는 게 아니라 그냥 무관한 vault로 취급되어 동기화됩니다. 두 번째 기기를 설정할 때"
+" 이 점을 꼭 기억하세요."
+
+#: ../../prerequisites.rst:60 fd7f80aa5dcf455582f0117f5a32f6d2
+msgid "Continue to :doc:`installation`."
+msgstr "이어서 :doc:`installation`\\ 으로 진행하세요."

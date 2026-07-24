@@ -1,16 +1,17 @@
+import { getLanguage } from "obsidian";
 import { ko } from "./locales/ko";
 import { en } from "./locales/en";
 
 // Our own translation resources — no longer references core's window.i18next. The active language
-// is picked from document.documentElement.lang (Obsidian's UI language setting); if the language
-// isn't supported or that table has no entry for the key, the fallback (the original Korean text)
-// passed at the call site is used as-is.
+// comes from Obsidian's own getLanguage() (the app's configured UI language, ISO code); if the
+// language isn't supported or that table has no entry for the key, the fallback (the original
+// Korean text) passed at the call site is used as-is.
 const locales: Record<string, Record<string, string>> = { ko, en };
 
 // Generic dispatch over whatever locales are registered above — adding a new locale file to the
 // `locales` map is enough on its own; nothing here needs to change.
 function detectLanguage(): string {
-  const lang = activeDocument.documentElement.lang?.toLowerCase() ?? "";
+  const lang = getLanguage().toLowerCase();
   for (const code of Object.keys(locales)) {
     if (lang.startsWith(code)) return code;
   }

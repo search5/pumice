@@ -1,0 +1,197 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: ko <LL@li.org>\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../troubleshooting.rst:2 4cfb364c46ce4e39ae475ab4629b03fd
+msgid "Troubleshooting & FAQ"
+msgstr "문제 해결 & FAQ"
+
+#: ../../troubleshooting.rst:5 7543bd7edbc54980ab60838e46f1e911
+msgid "Plugin won't install or update"
+msgstr "플러그인이 설치되거나 업데이트되지 않음"
+
+#: ../../troubleshooting.rst:7 8417372d876149c092d7391a062aaf0e
+msgid ""
+"**Symptom:** Installing or updating Pumice fails, especially on mobile, even"
+" though the same version installs fine on desktop."
+msgstr "**증상:** 같은 버전이 데스크톱에서는 잘 설치되는데, 특히 모바일에서 Pumice 설치나 업데이트가 실패합니다."
+
+#: ../../troubleshooting.rst:10 cf5c7a8459444787b0f15c97eef2d1bd
+msgid ""
+"**Cause:** Pumice's ``minAppVersion`` may be newer than the Obsidian *app* "
+"installed on that device. Desktop and mobile Obsidian don't always update at"
+" the same pace — app-store rollout in particular can lag behind the desktop "
+"release by days or weeks."
+msgstr ""
+"**원인:** Pumice의 ``minAppVersion``\\ 이 그 기기에 설치된 Obsidian *앱*\\ 보다 더 최신일 수 "
+"있습니다. 데스크톱과 모바일 Obsidian은 항상 같은 속도로 업데이트되지는 않습니다 — 특히 앱스토어 배포는 데스크톱 릴리스보다 "
+"며칠에서 몇 주까지 늦어질 수 있습니다."
+
+#: ../../troubleshooting.rst:15 227b136fcd904a67880fb95a06bb7efb
+msgid ""
+"**Fix:** Check **Settings → About** on the device having trouble, and update"
+" Obsidian itself there (via the App Store/Play Store on mobile) before "
+"retrying the plugin install/update."
+msgstr ""
+"**해결:** 문제가 있는 기기에서 **설정 → 정보**\\ 를 확인하고, 플러그인 설치/업데이트를 다시 시도하기 전에 거기서 "
+"Obsidian 자체를 먼저 업데이트하세요(모바일이라면 앱스토어/플레이스토어를 통해)."
+
+#: ../../troubleshooting.rst:20 dd5708acaa6d449bb29895989957c326
+msgid "\"Test connection\" fails"
+msgstr "\"연결 테스트\"가 실패함"
+
+#: ../../troubleshooting.rst:22 2c267da3e89745a1b2b9f2f728611f04
+msgid ""
+"**Symptom:** Clicking **Test connection** in settings fails, or sync never "
+"completes."
+msgstr "**증상:** 설정에서 **연결 테스트**\\ 를 클릭하면 실패하거나, 동기화가 끝나지 않습니다."
+
+#: ../../troubleshooting.rst:25 887702223c4f4c8ca38c12d6e213235c
+msgid "**Fix:** Work through, in order:"
+msgstr "**해결:** 다음을 순서대로 확인하세요:"
+
+#: ../../troubleshooting.rst:27 e1de966cdfb04fbca044a90fe599bd5e
+msgid ""
+"Double-check **Server address** and **Server port** match what pumice-server"
+" is actually configured for."
+msgstr "**서버 주소**\\ 와 **서버 포트**\\ 가 pumice-server가 실제로 설정된 값과 일치하는지 다시 확인하세요."
+
+#: ../../troubleshooting.rst:29 acdece16aa7a4419aa5d2d5023732a22
+msgid ""
+"Confirm the device running Obsidian can reach that host/port at all — same "
+"network, VPN connected, firewall not blocking it."
+msgstr ""
+"Obsidian이 실행 중인 기기가 그 호스트/포트에 아예 접근이 가능한지 확인하세요 — 같은 네트워크, VPN 연결 여부, 방화벽이 "
+"막고 있지 않은지."
+
+#: ../../troubleshooting.rst:31 4b746b7819d54f28a4d9fe88d869ad06
+msgid ""
+"If **Use TLS** is on, make sure the server is actually reachable over HTTPS "
+"at that address (a plain-HTTP server with TLS toggled on in settings will "
+"fail the handshake)."
+msgstr ""
+"**TLS 사용**\\ 이 켜져 있다면, 그 주소에서 서버가 실제로 HTTPS로 연결 가능한지 확인하세요(설정에서 TLS만 켜놓고 서버는"
+" 일반 HTTP라면 핸드셰이크가 실패합니다)."
+
+#: ../../troubleshooting.rst:34 5bc73fc9b2ff4411ba2431f15504e30b
+msgid ""
+"Confirm you're logged in (**Settings → Pumice → Authentication** should show"
+" a **Delete** button, not **Log in**) — an expired or deleted token fails "
+"the same way as a network problem."
+msgstr ""
+"로그인되어 있는지 확인하세요(**설정 → Pumice → 인증**\\ 에 **로그인**\\ 이 아니라 **삭제** 버튼이 보여야 합니다)"
+" — 만료되거나 삭제된 토큰은 네트워크 문제와 똑같은 방식으로 실패합니다."
+
+#: ../../troubleshooting.rst:39 9c660c095a19440194b2cad05e5ec6cb
+msgid "A vault syncs, but two devices never see each other's changes"
+msgstr "vault는 동기화되는데, 두 기기가 서로의 변경사항을 전혀 못 봄"
+
+#: ../../troubleshooting.rst:41 2890638a07e64eb3a6d18633f078d23b
+msgid ""
+"**Cause:** The two devices' vault folders don't have the *exact* same name. "
+"Since the folder name is the vault's whole identity on the server (see "
+":doc:`prerequisites`), a mismatch isn't rejected with an error — it just "
+"syncs as two unrelated vaults, each happily syncing with itself."
+msgstr ""
+"**원인:** 두 기기의 vault 폴더 이름이 *정확히* 같지 않습니다. 폴더 이름이 서버상에서 vault의 identity "
+"전부이므로(:doc:`prerequisites` 참고), 이름이 다르면 에러로 거부되는 게 아니라 그냥 서로 무관한 두 vault로 "
+"동기화되어, 각자 자기 자신과만 잘 동기화됩니다."
+
+#: ../../troubleshooting.rst:46 22f9e21d76a64df0ab5f9cff7f633304
+msgid ""
+"**Fix:** Rename one vault's folder to match the other exactly, then sync "
+"again."
+msgstr "**해결:** 한쪽 vault의 폴더 이름을 다른 쪽과 정확히 맞추고 다시 동기화하세요."
+
+#: ../../troubleshooting.rst:50 b747e3ff3de84e758e55b6bbd7033892
+msgid "Downloaded files are unreadable garbage"
+msgstr "다운로드한 파일이 읽을 수 없는 깨진 내용임"
+
+#: ../../troubleshooting.rst:52 39b1388d3e594cbf8227000e4a62f2f3
+msgid ""
+"**Cause:** End-to-end encryption is enabled, and this device's **Sync "
+"encryption password** doesn't match the password used on whichever device "
+"originally uploaded that content. The server only ever stores ciphertext, so"
+" a password mismatch downloads real ciphertext that this device can't "
+"decrypt."
+msgstr ""
+"**원인:** 종단간 암호화가 켜져 있는데, 이 기기의 **동기화 암호화 비밀번호**\\ 가 그 콘텐츠를 원래 업로드한 기기에서 쓴 "
+"비밀번호와 다릅니다. 서버는 항상 암호문만 저장하므로, 비밀번호가 다르면 이 기기가 복호화할 수 없는 진짜 암호문을 그대로 다운로드하게 "
+"됩니다."
+
+#: ../../troubleshooting.rst:58 fd0cf95833e146288fce89f1feb81f24
+msgid ""
+"**Fix:** Re-enter the same encryption password on every device syncing this "
+"vault (**Settings → Pumice → Security**). See :doc:`usage` for how E2EE is "
+"scoped per-device."
+msgstr ""
+"**해결:** 이 vault를 동기화하는 모든 기기에 같은 암호화 비밀번호를 다시 입력하세요(**설정 → Pumice → 보안**). "
+"E2EE가 기기별로 어떻게 적용되는지는 :doc:`usage`\\ 를 참고하세요."
+
+#: ../../troubleshooting.rst:63 5f50415df8db40e38779b8ace053007d
+msgid "\"Publish current file\" shows a message instead of publishing"
+msgstr "\"현재 파일 게재\"가 게재하는 대신 메시지를 보여줌"
+
+#: ../../troubleshooting.rst:65 b860bb8accb245fe913f0b31acde2db1
+msgid ""
+"This is expected, not a bug — see :ref:`Force-publishing a single file` in "
+":doc:`publish`. Add ``publish: true`` to the note's frontmatter and try "
+"again."
+msgstr ""
+"이건 버그가 아니라 의도된 동작입니다 — :doc:`publish`\\ 의 :ref:`Force-publishing a single "
+"file`\\ 를 참고하세요. 노트의 프론트매터에 ``publish: true``\\ 를 추가하고 다시 시도하세요."
+
+#: ../../troubleshooting.rst:70 d571630fe5f14042a1b3476c14526ad6
+msgid "A large publish/sync feels slower on one device than another"
+msgstr "큰 게재/동기화가 유독 한 기기에서만 느리게 느껴짐"
+
+#: ../../troubleshooting.rst:72 943b81cd3c1b40e79bd72cf723226375
+msgid ""
+"**Cause:** Likely the streaming-upload fast path (see :doc:`architecture`) "
+"isn't available on that specific device — either the server isn't configured"
+" for TLS, or the device's browser engine doesn't support streaming request "
+"bodies yet (notably, Obsidian's iOS app only gained this with iOS/iPadOS "
+"26.4). This isn't a failure: uploads still complete correctly over the "
+"batched fallback path, just less efficiently for very large vaults."
+msgstr ""
+"**원인:** 그 기기에서만 스트리밍 업로드 고속 경로(:doc:`architecture` 참고)를 못 쓰고 있을 가능성이 큽니다 — "
+"서버가 TLS로 설정되어 있지 않거나, 그 기기의 브라우저 엔진이 아직 스트리밍 요청 바디를 지원하지 않는 경우입니다(특히 "
+"Obsidian의 iOS 앱은 iOS/iPadOS 26.4에서야 이 기능을 얻었습니다). 이건 실패가 아닙니다: 업로드는 배치 폴백 "
+"경로로도 정상적으로 완료되며, 아주 큰 vault에서 덜 효율적일 뿐입니다."
+
+#: ../../troubleshooting.rst:80 0409d35ba86e4aeeba71dce22e7c435a
+msgid ""
+"**Fix (optional):** Put pumice-server behind TLS if it isn't already, and/or"
+" update the device's OS, if you want the faster path there too."
+msgstr ""
+"**해결(선택 사항):** 그 기기에서도 더 빠른 경로를 쓰고 싶다면, 아직 아니라면 pumice-server를 TLS 뒤에 두거나, "
+"기기의 OS를 업데이트하세요."
+
+#: ../../troubleshooting.rst:84 235327e3ea5547e0b1ecfd7266ce0ab7
+msgid "Still stuck?"
+msgstr "그래도 해결이 안 되나요?"
+
+#: ../../troubleshooting.rst:86 eb9d4187585d40179aaa4e95e8f1f910
+msgid ""
+"Open an issue on `GitHub <https://github.com/search5/pumice/issues>`_ with "
+"your Obsidian version (desktop and/or mobile), Pumice version, and what "
+"you've already tried."
+msgstr ""
+"`GitHub <https://github.com/search5/pumice/issues>`_ 에 이슈를 올려주세요 — Obsidian "
+"버전(데스크톱 및/또는 모바일), Pumice 버전, 이미 시도해본 것을 함께 적어주시면 됩니다."
