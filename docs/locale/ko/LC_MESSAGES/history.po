@@ -1,0 +1,253 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, Ji-ho Lee
+# This file is distributed under the same license as the Pumice package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: Pumice 0.0.17\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: ko <LL@li.org>\n"
+"Language: ko\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../../history.rst:2 5b66042faa834d7ebce48b1d9d7baf03
+msgid "Version history & local snapshots"
+msgstr "버전 히스토리 & 로컬 스냅샷"
+
+#: ../../history.rst:4 1e2e50799c284a65b893ec19f089360c
+msgid ""
+"Pumice keeps two independent, complementary safety nets around every file, "
+"serving different purposes:"
+msgstr "Pumice는 모든 파일에 대해 서로 다른 목적을 가진, 독립적이면서 상호 보완적인 두 가지 안전망을 유지합니다:"
+
+#: ../../history.rst:11 ../../history.rst:32 7093e5a438b84f7c8fffb5fead3d708d
+#: a8acfe7a727e43ef9ead7e1e25410b04
+msgid "Version history"
+msgstr "버전 히스토리"
+
+#: ../../history.rst:12 ../../history.rst:79 cf71b0a8738b4b5e93bbcc78c051b630
+#: fd92ab97d0fb4e1b931357af67cc2f9d
+msgid "Local snapshots"
+msgstr "로컬 스냅샷"
+
+#: ../../history.rst:13 28c0bcfb4942455394e0c2944184cd4a
+msgid "Where it lives"
+msgstr "저장 위치"
+
+#: ../../history.rst:14 4967cda55b314a868ef5b155a7db9035
+msgid "On the server, alongside every other device's synced copy."
+msgstr "서버에, 다른 모든 기기의 동기화된 사본과 함께."
+
+#: ../../history.rst:15 c326a88bd5d942cbad1d0080c259dec3
+msgid "Only in this device's local Obsidian data — never synced or uploaded."
+msgstr "이 기기의 로컬 Obsidian 데이터에만 — 동기화되거나 업로드되지 않음."
+
+#: ../../history.rst:16 63bf36b76d9b405995aa7fffd81ac156
+msgid "When a version is captured"
+msgstr "버전이 기록되는 시점"
+
+#: ../../history.rst:17 070a9a660c71432781805fc7ac8c9ced
+msgid "Every time a sync uploads a changed file."
+msgstr "동기화가 변경된 파일을 업로드할 때마다."
+
+#: ../../history.rst:18 a64ca1fb0bc94ad0a86a09455791a6ff
+msgid "On a timer while you edit, independent of sync."
+msgstr "동기화와 무관하게, 편집하는 동안 타이머로."
+
+#: ../../history.rst:19 a921c99791044c91ab77cb7c3adb8a54
+msgid "Survives a reinstall / new device"
+msgstr "재설치/새 기기에서도 남아있는지"
+
+#: ../../history.rst:20 c33bd50da4cc453582f4de0b873018f3
+msgid "Yes — it's on the server."
+msgstr "예 — 서버에 있습니다."
+
+#: ../../history.rst:21 109d70e77c8e4838aa8a65dda8d6f852
+msgid "No — it's local to this one installation."
+msgstr "아니오 — 이 설치본에만 로컬로 있습니다."
+
+#: ../../history.rst:22 3aa03f1dce8040938612a5f2c8facadb
+msgid "Retention"
+msgstr "보관 기간"
+
+#: ../../history.rst:23 28ad3bbe1aed4bb2a43aae8d2ef80fd0
+msgid "Kept indefinitely (server-side)."
+msgstr "무기한 보관됩니다(서버 측)."
+
+#: ../../history.rst:24 61fd4fc2398846d6ad9dc515641fcb68
+msgid "Auto-cleaned after a configurable number of days."
+msgstr "설정 가능한 일수가 지나면 자동으로 정리됩니다."
+
+#: ../../history.rst:26 991f970fda3e4c66a97a5a3f3d503283
+msgid ""
+"In short: version history is \"what did the *server* see, and when,\" and "
+"local snapshots are \"what was I looking at a few minutes ago, before I next"
+" synced.\" They're deliberately independent — disabling or losing one "
+"doesn't affect the other."
+msgstr ""
+"요약하면: 버전 히스토리는 \"*서버*\\ 가 언제 무엇을 봤는가\"이고, 로컬 스냅샷은 \"다음 동기화 전, 몇 분 전에 내가 보고 "
+"있던 것\"입니다. 둘은 의도적으로 독립적입니다 — 하나를 끄거나 잃어버려도 다른 하나에는 영향을 주지 않습니다."
+
+#: ../../history.rst:34 a16102e31e9141dea5915b5dd0f4f4f2
+msgid ""
+"Every time a sync uploads a changed file, pumice-server records a full "
+"backup of the previous content before overwriting it (hard-linked on disk "
+"where possible, so this doesn't multiply storage for unchanged bytes). That "
+"backup is what Pumice's version history browser lets you look through and "
+"restore from."
+msgstr ""
+"동기화가 변경된 파일을 업로드할 때마다, pumice-server는 덮어쓰기 전에 이전 내용의 전체 백업을 기록합니다(가능하면 디스크에서"
+" 하드링크로 처리해서, 바뀌지 않은 바이트에 대해 저장공간이 중복되지 않습니다). 이 백업이 바로 Pumice의 버전 히스토리 탐색기에서"
+" 보고 복원할 수 있는 대상입니다."
+
+#: ../../history.rst:41 a9a56ea943404092aa120d4acf7d93f6
+msgid "Opening version history"
+msgstr "버전 히스토리 열기"
+
+#: ../../history.rst:43 f460499edc51463788930308d8ba055f
+msgid "With a file open, either:"
+msgstr "파일을 연 상태에서, 다음 중 하나를 하세요:"
+
+#: ../../history.rst:45 a12514f219604523894a717b10b06d05
+msgid "Click the **history** ribbon icon (**Open version history**), or"
+msgstr "**히스토리** 리본 아이콘(**버전 히스토리 열기**)을 클릭하거나,"
+
+#: ../../history.rst:46 4aad90b547e846d58963cc3081f1f969
+msgid ""
+"Right-click the file (in the editor tab, file explorer, or more-options "
+"menu) and choose **Open version history**."
+msgstr "파일을 우클릭해서(편집기 탭, 파일 탐색기, 또는 더보기 메뉴에서) **버전 히스토리 열기**\\ 를 선택하세요."
+
+#: ../../history.rst:50 af73401b5f6c4ecf992dee7858eab01e
+msgid "Browsing versions"
+msgstr "버전 둘러보기"
+
+#: ../../history.rst:52 7e91cc74fdbf479690123b94d8dc014f
+msgid ""
+"On desktop, the modal splits into a list (left) and a preview/diff pane "
+"(right); on mobile, tapping a list entry slides into a full-screen preview, "
+"and you can swipe left/right to step between revisions without going back to"
+" the list each time."
+msgstr ""
+"데스크톱에서는 모달이 목록(왼쪽)과 미리보기/diff 패널(오른쪽)로 나뉩니다; 모바일에서는 목록 항목을 탭하면 전체 화면 미리보기로 "
+"넘어가고, 매번 목록으로 돌아가지 않아도 좌우로 스와이프해서 리비전 사이를 이동할 수 있습니다."
+
+#: ../../history.rst:57 83708113f11c4ffaa53add2734f6b102
+msgid ""
+"The list groups nearby revisions together (close in time, same device/user) "
+"rather than showing one row per raw save, and shows an avatar per "
+"device/user so you can tell at a glance who made a given change and from "
+"where. If a file was renamed or moved between two revisions, the entry calls"
+" that out explicitly (e.g. \"moved from ``old-folder/`` to ``new-"
+"folder/``,\" or \"renamed from ``old-name.md``\") instead of silently "
+"showing unrelated-looking history."
+msgstr ""
+"목록은 저장할 때마다 한 줄씩 보여주는 대신 가까운 리비전들을(시간상 가깝고, 같은 기기/사용자인 것들) 묶어서 보여주고, 기기/사용자별"
+" 아바타를 표시해서 누가 어디서 그 변경을 했는지 한눈에 알 수 있습니다. 두 리비전 사이에 파일이 이름이 바뀌거나 이동했다면, 서로 "
+"무관해 보이는 히스토리를 조용히 보여주는 대신 항목에 명시적으로 표시합니다(예: \"``old-folder/``\\ 에서 ``new-"
+"folder/``\\ 로 이동함\", 또는 \"``old-name.md``\\ 에서 이름 변경됨\")."
+
+#: ../../history.rst:65 a2a1e75afb43429cb16ad32ffd96646a
+msgid "For any selected revision you can:"
+msgstr "선택한 리비전에 대해 다음을 할 수 있습니다:"
+
+#: ../../history.rst:67 6d1b6c8aa89f40f1b38ed590f785cb20
+msgid ""
+"**Preview** the content, with a diff toggle to see exactly what changed "
+"against the current version instead of the raw content."
+msgstr "내용을 **미리보기**\\ 하고, diff 토글로 원본 내용 대신 현재 버전과 비교해 정확히 무엇이 바뀌었는지 볼 수 있습니다."
+
+#: ../../history.rst:69 f41bffbf0d5e401ba0406b4baecb3633
+msgid "**Copy** the version's content to your clipboard."
+msgstr "해당 버전의 내용을 클립보드로 **복사**\\ 합니다."
+
+#: ../../history.rst:70 7d931a4baf1f48f5b1cf4961e0ef1b88
+msgid ""
+"**Restore** it — this writes that revision's content back into your vault at"
+" its current path (decrypting first, transparently, if :ref:`E2EE <End-to-"
+"end encryption (E2EE)>` is enabled). Restoring the version that's already "
+"the newest is a no-op with a notice, not a wasted round trip. Restoring "
+"itself is also recorded as a new version, so it's never a destructive dead "
+"end — you can always go back further if a restore turns out to be the wrong "
+"one."
+msgstr ""
+"**복원**\\ 합니다 — 해당 리비전의 내용을 현재 경로의 vault에 다시 씁니다(:ref:`E2EE <End-to-end "
+"encryption (E2EE)>`\\ 가 켜져 있으면 먼저 투명하게 복호화합니다). 이미 최신 버전인 리비전을 복원하려 하면 헛수고 "
+"없이 알림과 함께 아무 일도 일어나지 않습니다. 복원 자체도 새 버전으로 기록되므로, 돌이킬 수 없는 막다른 길이 절대 아닙니다 — "
+"복원이 잘못된 선택이었다면 언제든 더 이전으로 되돌아갈 수 있습니다."
+
+#: ../../history.rst:81 bf35f77236034549a58b38182a2ca915
+msgid ""
+"Independent of any sync, Pumice watches the files you're actively working on"
+" (``.md``, ``.canvas``, and ``.base`` files) and periodically saves a "
+"snapshot of their content to a local database — the same idea as Obsidian "
+"core's own File Recovery, implemented separately so it keeps working exactly"
+" the same way regardless of whether core's own feature is installed, "
+"enabled, or changes its storage format in some future Obsidian release."
+msgstr ""
+"동기화와 무관하게, Pumice는 현재 작업 중인 파일들(``.md``, ``.canvas``, ``.base`` 파일)을 지켜보며 그 "
+"내용의 스냅샷을 로컬 데이터베이스에 주기적으로 저장합니다 — Obsidian 코어 자체의 파일 복구 기능과 같은 발상이지만, 코어의 "
+"기능이 설치/활성화되어 있는지, 혹은 향후 Obsidian 릴리스에서 저장 형식이 바뀌는지와 무관하게 정확히 같은 방식으로 계속 "
+"동작하도록 별도로 구현했습니다."
+
+#: ../../history.rst:88 0e283958c6534a588947285ccf2cbb29
+msgid ""
+"A snapshot is taken when a file changes (on edit, on open, or on creation), "
+"but throttled: at most one snapshot per file per **Save interval** (default "
+"5 minutes), and skipped entirely if the content is identical to the last "
+"snapshot — so idle files don't accumulate redundant copies. Snapshots older "
+"than the **Retention period** (default 7 days) are cleaned up automatically "
+"in the background."
+msgstr ""
+"스냅샷은 파일이 바뀔 때(편집, 열기, 생성 시) 저장되지만, 속도가 제한됩니다: 파일당 **저장 간격** (기본 5분)마다 최대 한 번만"
+" 저장되고, 내용이 마지막 스냅샷과 동일하면 아예 건너뜁니다 — 그래서 가만히 있는 파일에는 중복 사본이 쌓이지 않습니다. **보관 "
+"기간** (기본 7일)보다 오래된 스냅샷은 백그라운드에서 자동으로 정리됩니다."
+
+#: ../../history.rst:95 4df5851e9e07402bbe174e588169562d
+msgid ""
+"Both of these are configurable under **Settings → Pumice → Local "
+"snapshots**, along with a **Clear local snapshots** button that wipes every "
+"saved snapshot immediately, if you want to start fresh."
+msgstr ""
+"이 두 값은 **설정 → Pumice → 로컬 스냅샷**\\ 에서 설정할 수 있고, 처음부터 다시 시작하고 싶다면 저장된 모든 스냅샷을 "
+"즉시 지우는 **로컬 스냅샷 지우기** 버튼도 있습니다."
+
+#: ../../history.rst:100 3d1aa69f22214cb4b420b0dc6900670f
+msgid "Opening local snapshots"
+msgstr "로컬 스냅샷 열기"
+
+#: ../../history.rst:102 5c43a5569b504cbea5365c4d1c83ac26
+msgid ""
+"Local snapshots don't have their own ribbon icon or command — they're "
+"reached *from* version history. Open **version history** for a file (see "
+"above); if that file has any local snapshots saved, an **Open saved "
+"snapshots** button appears at the top of the list. From there, the "
+"browsing/preview/diff/copy experience is the same as version history "
+"(including the same desktop-split-view / mobile-swipe layout), but "
+"**Restore** here writes the snapshot's content back into the file directly —"
+" there's no server round-trip involved, since the snapshot never left this "
+"device."
+msgstr ""
+"로컬 스냅샷은 자체 리본 아이콘이나 명령이 없습니다 — 버전 히스토리 *안에서* 접근합니다. 위에서 설명한 대로 파일의 **버전 "
+"히스토리**\\ 를 여세요; 그 파일에 저장된 로컬 스냅샷이 있으면 목록 맨 위에 **저장된 스냅샷 열기** 버튼이 나타납니다. "
+"거기서부터는 둘러보기/미리보기/diff/복사 경험이 버전 히스토리와 동일하지만(같은 데스크톱 분할 화면/모바일 스와이프 레이아웃 포함),"
+" 여기서의 **복원**\\ 은 스냅샷의 내용을 파일에 직접 다시 씁니다 — 스냅샷이 이 기기를 벗어난 적이 없으므로 서버 왕복이 필요 "
+"없습니다."
+
+#: ../../history.rst:113 07c0a0515df241b3ad60e8d631f02bc9
+msgid ""
+"Because local snapshots only exist on the device that took them, they won't "
+"show an \"Open saved snapshots\" button on a *different* device for the same"
+" file, even if that file has plenty of server-side version history. That's "
+"expected — check on the device where you were actually editing at the time."
+msgstr ""
+"로컬 스냅샷은 그것을 만든 기기에만 존재하므로, 그 파일에 서버 측 버전 히스토리가 아무리 많더라도 *다른* 기기에서는 \"저장된 스냅샷"
+" 열기\" 버튼이 나타나지 않습니다. 이건 정상입니다 — 실제로 편집하고 있었던 그 기기에서 확인하세요."
