@@ -87,11 +87,21 @@ versions, which matters once this plugin is submitted to the Community Plugins l
 
 ## Regenerating the gRPC-Web stubs
 
-`src/generated/` (`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`) is generated from
-`sync.proto`. It's generated automatically the first time you run `npm run dev`/`build`/`lint`
-(via `scripts/ensure-generated.mjs`, wired up as a `pre*` script), so a fresh clone doesn't need
-a manual step. Those `pre*` scripts only run generation if `src/generated/` is missing though —
-if you modify `sync.proto`, regenerate the stubs explicitly with:
+`src/generated/` (`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`, `SyncServiceClientPb.d.ts`)
+is generated from `sync.proto`. The `.js`/`.ts` implementation files are gitignored and generated
+automatically the first time you run `npm run dev`/`build`/`lint` (via `scripts/ensure-generated.mjs`,
+wired up as a `pre*` script), so a fresh clone doesn't need a manual step. The two `.d.ts` files
+are committed, though (`SyncServiceClientPb.d.ts` is derived from the `.ts` via
+`tsc --declaration --emitDeclarationOnly` as part of `npm run proto:gen`) — this is deliberate:
+external tools that lint/typecheck this repo without running `npm install`/generation first can
+still resolve real types for every `pb.*`/`SyncServiceClient` reference from just the `.d.ts`s,
+instead of every such reference collapsing to `any` and cascading into hundreds of unrelated
+`no-unsafe-*` findings (confirmed locally — with only the `.d.ts` files present, `eslint .`
+reports zero findings related to this).
+
+The `pre*` scripts only run generation if the `.ts` implementation is missing though —
+if you modify `sync.proto`, regenerate the stubs explicitly and commit the two updated `.d.ts`
+files:
 
 ```bash
 npm run proto:gen

@@ -40,4 +40,34 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
+// protoc-gen-js emits sync_pb.js paired with a real, hand-off-worthy sync_pb.d.ts, but
+// protoc-gen-grpc-web's TypeScript mode emits only SyncServiceClientPb.ts (implementation and
+// types in one file, nothing separate to hand off). Deriving a matching .d.ts here via
+// `tsc --declaration --emitDeclarationOnly` gives that file the same shape as sync_pb.d.ts: a
+// type-only declaration that's committed (see .gitignore) so external tools that lint/typecheck
+// this repo without running `npm install`/generation first can still resolve real types for
+// `import { SyncServiceClient } from "./generated/SyncServiceClientPb"` -- instead of every
+// pb.*/SyncServiceClient reference collapsing to `any` and cascading into hundreds of unrelated
+// no-unsafe-* findings, which is what happened when neither the .ts nor a .d.ts was present.
+const tsc = path.join(root, "node_modules", ".bin", process.platform === "win32" ? "tsc.cmd" : "tsc");
+const declResult = spawnSync(
+  tsc,
+  [
+    "--declaration",
+    "--emitDeclarationOnly",
+    "--skipLibCheck",
+    "--moduleResolution", "bundler",
+    "--module", "ESNext",
+    "--target", "ES2022",
+    "--outDir", "src/generated",
+    "src/generated/SyncServiceClientPb.ts",
+  ],
+  { cwd: root, stdio: "inherit" },
+);
+
+if (declResult.status !== 0) {
+  console.error("[gen-proto] Failed to derive SyncServiceClientPb.d.ts. See output above.");
+  process.exit(declResult.status ?? 1);
+}
+
 console.log("[gen-proto] Generated src/generated/ from sync.proto.");

@@ -1,5 +1,13 @@
 node_modules/
-src/generated/
+# src/generated/*.ts and *.js are the actual protoc-gen-js/protoc-gen-grpc-web implementation --
+# gitignored and regenerated locally (scripts/gen-proto.mjs, wired up via ensure-generated.mjs's
+# pre-dev/build/lint hooks). The *.d.ts files alongside them ARE committed (the `!` negation below)
+# so external tools that lint/typecheck this repo without running that generation step first can
+# still resolve real types for pb.*/SyncServiceClient, instead of every reference collapsing to
+# `any`. `src/generated/*` (not `src/generated/`) is required for the negation to take effect --
+# git won't look inside a directory that's excluded by name.
+src/generated/*
+!src/generated/*.d.ts
 bin/protoc-gen-grpc-web
 main.js
 docs/_build/
