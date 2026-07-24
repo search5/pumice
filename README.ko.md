@@ -87,10 +87,13 @@ git push --follow-tags
 ## gRPC-Web 스텁 재생성하기
 
 `src/generated/`(`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`)는 `sync.proto`로부터
-생성됩니다. `npm run dev`/`build`/`lint`를 처음 실행할 때 (`pre*` 스크립트로 연결된
-`scripts/ensure-generated.mjs`를 통해) 자동으로 생성되므로, 새로 클론했을 때 수동 작업이
-필요 없습니다. 다만 이 `pre*` 스크립트들은 `src/generated/`가 없을 때만 생성을 실행하므로,
-`sync.proto`를 수정했다면 다음으로 스텁을 명시적으로 재생성해야 합니다:
+생성되고, 파생 산출물임에도 저장소에 커밋되어 있습니다(gitignore 대상 아님) — 이건 의도적인
+결정입니다. 이 저장소를 lint/타입체크하는 외부 도구(예: Obsidian 자체 플러그인 심사)는
+`npm install` 없이 그냥 clone해서 `src/`에 바로 돌리는데, `src/generated/`가 없으면 모든
+`pb.*` 참조가 해석 불가/`any` 타입으로 무너져서 서로 무관해 보이는 `no-unsafe-*` 린트 에러가
+수백 개 쏟아집니다. `scripts/ensure-generated.mjs`(`npm run dev`/`build`/`lint`의 `pre*`
+스크립트로 연결됨)는 디렉터리가 없을 때만 재생성하므로, 일반적인 clone은 커밋된 걸 그대로
+씁니다. `sync.proto`를 수정했다면 스텁을 명시적으로 재생성하고 결과를 커밋하세요:
 
 ```bash
 npm run proto:gen
