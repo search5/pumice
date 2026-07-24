@@ -15,7 +15,7 @@
     "prebuild": "node scripts/ensure-generated.mjs",
     "build": "node esbuild.config.mjs production",
     "prelint": "node scripts/ensure-generated.mjs",
-    "lint": "tsc --noEmit",
+    "lint": "tsc --noEmit && eslint .",
     "proto:gen": "node scripts/gen-proto.mjs",
     "version": "node scripts/version-bump.mjs && git add manifest.json versions.json"
   },
@@ -28,9 +28,13 @@
   "devDependencies": {
     "@types/google-protobuf": "^3.15.12",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/parser": "^8.64.0",
     "esbuild": "^0.21.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.4.1",
     "obsidian": "latest",
     "protoc-gen-js": "^3.21.4-4",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.64.0"
   }
 }
