@@ -895,3 +895,49 @@
 .grpc-publish-modal .publish-upload-item.mod-error .flair {
   color: var(--text-error);
 }
+
+.grpc-sync-diagnostics-actions {
+  display: flex;
+  gap: var(--size-4-2);
+  margin-bottom: var(--size-4-3);
+}
+
+.grpc-sync-diagnostics-list {
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+}
+
+.grpc-sync-diagnostics-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-2);
+  padding: var(--size-2-1) var(--size-4-1);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-small);
+  font-family: var(--font-monospace);
+}
+
+.grpc-sync-diagnostics-row:nth-child(odd) {
+  background-color: var(--background-secondary);
+}
+
+.grpc-sync-diagnostics-row-warn {
+  color: var(--text-warning);
+}
+
+.grpc-sync-diagnostics-time {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.grpc-sync-diagnostics-level {
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
+}
+
+.grpc-sync-diagnostics-message {
+  word-break: break-word;
+}

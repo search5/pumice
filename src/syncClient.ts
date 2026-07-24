@@ -22,6 +22,12 @@ export type SyncProgressCallback = (info: { phase: SyncProgressPhase; done: numb
 // instead of a separate hardcoded Notice popping up on top of it.
 export type SyncRetryCallback = (info: { delayMs: number; retriesLeft: number }) => void;
 
+// Mirrors the same debug/warn diagnostics main.ts's own logDebug() persists (in-sync retry
+// attempts, files still failing after retries) into the caller's SyncDiagnosticsLog -- kept as a
+// plain callback (like onProgress/onRetry above) rather than importing SyncDiagnosticsLog
+// directly, so this class stays decoupled from Obsidian's App/local-storage specifics.
+export type SyncLogCallback = (level: "debug" | "warn", message: string) => void;
+
 // Shape of a single /api/history entry, as returned by the server. Structurally compatible with
 // syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
 export interface HistoryVersionEntry {
@@ -113,6 +119,14 @@ async function sha256(buffer: ArrayBuffer): Promise<string> {
   const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
   const hashArray = Array.from(new Uint8Array(hashBuffer));
   return hashArray.map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Keeps a persisted log message (see SyncLogCallback) readably short even when a batch of dozens
+// or hundreds of paths fails at once.
+function formatPathList(paths: string[]): string {
+  const MAX_SHOWN = 5;
+  const shown = paths.slice(0, MAX_SHOWN).join(", ");
+  return paths.length > MAX_SHOWN ? `${shown}, and ${paths.length - MAX_SHOWN} more` : shown;
 }
 
 // Uint8Array concatenation utility
@@ -255,6 +269,13 @@ export class SyncClient {
   private onRetry?: SyncRetryCallback;
   private lastProgressReportAt = 0;
   private e2eeKeyCache: CryptoKey | null = null;
+  // Paths this sync is currently writing to the vault itself (downloads, tombstone deletes) --
+  // shared with the plugin's vault event listeners (see main.ts) so a write this sync performs
+  // doesn't get misread as a fresh local edit and queue a needless follow-up sync. Populated only
+  // for the duration of each individual write, not the whole sync, so a genuine concurrent edit to
+  // a different file is never suppressed.
+  private selfWritePaths: Set<string>;
+  private onLog?: SyncLogCallback;
 
   private async getE2eeKey(): Promise<CryptoKey> {
     if (this.e2eeKeyCache) {
@@ -372,7 +393,9 @@ export class SyncClient {
     updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>,
     hashCache?: ContentHashCache,
     onProgress?: SyncProgressCallback,
-    onRetry?: SyncRetryCallback
+    onRetry?: SyncRetryCallback,
+    selfWritePaths?: Set<string>,
+    onLog?: SyncLogCallback
   ) {
     this.vault = vault;
     this.fileManager = fileManager;
@@ -384,6 +407,8 @@ export class SyncClient {
     this.hashCache = hashCache;
     this.onProgress = onProgress;
     this.onRetry = onRetry;
+    this.selfWritePaths = selfWritePaths ?? new Set<string>();
+    this.onLog = onLog;
 
     const protocol = settings.useTls ? "https" : "http";
     const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
@@ -404,6 +429,19 @@ export class SyncClient {
   private async calculateHash(file: TFile): Promise<string> {
     const arrayBuffer = await this.vault.readBinary(file);
     return sha256(arrayBuffer);
+  }
+
+  // Marks `path` as a self-write for the duration of `action` -- vault.on() fires synchronously as
+  // part of the write itself (before the awaited promise resolves), so adding the path before
+  // calling `action` guarantees the plugin's event listener sees it in `selfWritePaths` when it
+  // checks. Removed again in `finally` so the window stays as narrow as the write itself.
+  private async writeSelfPath<T>(path: string, action: () => Promise<T>): Promise<T> {
+    this.selfWritePaths.add(path);
+    try {
+      return await action();
+    } finally {
+      this.selfWritePaths.delete(path);
+    }
   }
 
   private isIgnored(filePath: string): boolean {
@@ -428,7 +466,7 @@ export class SyncClient {
     return false;
   }
 
-  public async sync(): Promise<{ uploaded: number; downloaded: number; deleted: number }> {
+  public async sync(): Promise<{ uploaded: number; downloaded: number; deleted: number; failed: number }> {
     let retries = 3;
     let delay = 1000;
 
@@ -601,7 +639,195 @@ export class SyncClient {
     });
   }
 
-  private async internalSync(): Promise<{ uploaded: number; downloaded: number; deleted: number }> {
+  // Uploads exactly `paths` (a subset of needUploadList on the first call, a shrinking list of
+  // previously-failed paths on retries -- see internalSync's retry loop) via whichever transport
+  // is available. Failures are reported through `onAck` like any other ack, not thrown -- a single
+  // bad file must not abort the rest of the batch/stream.
+  private async uploadFileBatch(
+    paths: string[],
+    vaultId: string,
+    scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>,
+    sizeByPath: Map<string, number>,
+    onAck: (ack: pb.UploadAck) => void
+  ): Promise<void> {
+    if (paths.length === 0) return;
+
+    if (supportsStreamingUpload(this.settings)) {
+      await this.uploadFilesStreaming(paths, vaultId, scannedWireBuffers, onAck);
+      return;
+    }
+
+    // Split into multiple batches bounded by byte size and file count. A single UploadBatch
+    // covering the whole first-sync upload set would otherwise have to sit fully serialized in
+    // memory before the first byte goes out; per the benchmark in #4_구현_계획.md (real generated
+    // protobuf classes, ~1.1GB synthetic upload), batching this cut peak RSS by ~17x and was
+    // *faster* to prepare/serialize too, not slower -- avoiding the reallocation cost of building
+    // one huge array/message. MAX_FILES_PER_BATCH exists because byte size alone isn't enough of a
+    // cap: a real vault is dominated by many small notes, so a byte-only cap let one batch swallow
+    // 95%+ of the file list in that same benchmark.
+    const BATCH_TARGET_BYTES = 20 * 1024 * 1024;
+    const MAX_FILES_PER_BATCH = 500;
+    const uploadBatches = groupIntoBatches(paths, (p) => sizeByPath.get(p) ?? 0, BATCH_TARGET_BYTES, MAX_FILES_PER_BATCH);
+    const metadata = getMetadata(this.token, this.settings);
+
+    for (const batchPaths of uploadBatches) {
+      const uploadBatch = new pb.UploadBatch();
+
+      // Same fix as the scan step above and for the same reason: reading/hashing each file to
+      // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This overlaps
+      // them instead. mapWithConcurrency preserves per-item result order, so flattening
+      // perFileChunks reproduces exactly the same overall chunk sequence the old sequential loop
+      // would have -- each file's own [header, data..., eof] triplet stays intact and in order,
+      // only which files finish preparing in what wall-clock order changes.
+      const UPLOAD_PREP_CONCURRENCY = 8;
+      const perFileChunks = await mapWithConcurrency(batchPaths, UPLOAD_PREP_CONCURRENCY, (uploadPath) =>
+        this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
+      );
+
+      uploadBatch.setChunksList(perFileChunks.flat());
+
+      // Handle the server's streaming response for this one batch before preparing the next --
+      // deliberately sequential (no pipelining of batch N+1's prep against batch N's send/ack
+      // wait) for this first version; see #4_구현_계획.md "향후 개선" for why that tradeoff was
+      // deferred rather than built without measuring it first.
+      await new Promise<void>((resolve, reject) => {
+        const uploadStream = this.client.uploadFiles(uploadBatch, metadata);
+        uploadStream.on("data", onAck);
+        uploadStream.on("end", () => resolve());
+        uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
+      });
+    }
+  }
+
+  // Downloads exactly `paths`, same shrinking-list-on-retry usage as uploadFileBatch above.
+  // Per-file failures (hash mismatch, save error) are collected into `failedPaths` and returned
+  // rather than thrown, so one bad file doesn't lose the rest of the batch.
+  private async downloadFileBatch(paths: string[], vaultId: string): Promise<{ downloadedCount: number; failedPaths: string[] }> {
+    if (paths.length === 0) return { downloadedCount: 0, failedPaths: [] };
+
+    const metadata = getMetadata(this.token, this.settings);
+    const downloadReq = new pb.DownloadBatchRequest();
+    downloadReq.setVaultId(vaultId);
+    downloadReq.setPathsList(paths);
+
+    let downloadedCount = 0;
+    const failedPaths: string[] = [];
+    let downloadsProcessed = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      const downloadStream = this.client.downloadFiles(downloadReq, metadata);
+      const fileBuffers = new Map<string, { mtime: number; chunks: Uint8Array[] }>();
+
+      // Wrapped so the listener itself stays synchronous (as EventEmitter#on expects) while the
+      // async body inside is still fully error-guarded -- an unguarded throw in here (e.g. the
+      // sha256 call below) would otherwise become an unhandled promise rejection instead of the
+      // same "log and move on to the next file" handling every other failure path here gets.
+      downloadStream.on("data", (chunk: pb.FileChunk) => {
+        void (async () => {
+        try {
+        if (chunk.hasHeader()) {
+          const header = chunk.getHeader()!;
+          fileBuffers.set(header.getPath(), {
+            mtime: Number(header.getModifiedAtMs()),
+            chunks: [],
+          });
+        } else if (chunk.hasData()) {
+          const dataPayload = chunk.getData()!;
+          const buf = fileBuffers.get(dataPayload.getPath());
+          if (buf) {
+            buf.chunks.push(dataPayload.getData_asU8());
+          }
+        } else if (chunk.hasEof()) {
+          const eofPayload = chunk.getEof()!;
+          const eofPath = eofPayload.getPath();
+          const buf = fileBuffers.get(eofPath);
+          if (!buf) return;
+
+          const fileDataBytes = concatUint8Arrays(buf.chunks);
+          fileBuffers.delete(eofPath);
+          this.reportProgress("download", ++downloadsProcessed, paths.length);
+
+          const calculatedHash = await sha256(fileDataBytes.buffer as ArrayBuffer);
+          if (calculatedHash !== eofPayload.getContentHash()) {
+            console.error(`Hash verification failed for downloaded file: ${eofPath}`);
+            failedPaths.push(eofPath);
+            return;
+          }
+
+          try {
+            const currentPath = eofPath;
+            const currentMtime = buf.mtime;
+
+            const dir = pathUtil.dirname(currentPath);
+            await ensureFolder(this.vault, dir);
+
+            const exists = await existsByPath(this.vault, currentPath);
+            if (exists) {
+              if (this.settings.conflictResolution === "client-wins") {
+                return;
+              }
+              if (this.settings.conflictResolution === "manual") {
+                try {
+                  const oldData = await readBinaryByPath(this.vault, currentPath);
+                  const ext = pathUtil.extname(currentPath);
+                  const baseName = currentPath.substring(0, currentPath.length - ext.length);
+                  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+                  const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
+                  await writeBinaryByPath(this.vault, conflictPath, oldData);
+                  new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
+                } catch (backupErr) {
+                  console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
+                }
+              }
+            }
+
+            let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
+            // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
+            // as-is for the cache when E2EE is off, since it's then already the plaintext hash
+            // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
+            // the buffer's already in memory).
+            let plainHashForCache = calculatedHash;
+            if (this.settings.enableE2EE && this.settings.e2eePassword) {
+              const key = await this.getE2eeKey();
+              plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
+              plainHashForCache = await sha256(plainData);
+            }
+
+            // mtime is set here, atomically, via Obsidian's own write options -- works the same
+            // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
+            await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, plainData, currentMtime));
+
+            // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
+            // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
+            if (this.hashCache) {
+              const written = this.vault.getAbstractFileByPath(currentPath);
+              if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
+            }
+
+            downloadedCount++;
+
+            if (this.deletedFiles[currentPath]) {
+              delete this.deletedFiles[currentPath];
+            }
+          } catch (e: unknown) {
+            console.error(`Failed to save downloaded file ${eofPath}:`, e);
+            failedPaths.push(eofPath);
+          }
+        }
+        } catch (e: unknown) {
+          console.error("Failed to process downloaded chunk:", e);
+        }
+        })();
+      });
+
+      downloadStream.on("end", () => resolve());
+      downloadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
+    });
+
+    return { downloadedCount, failedPaths };
+  }
+
+  private async internalSync(): Promise<{ uploaded: number; downloaded: number; deleted: number; failed: number }> {
     const metadata = getMetadata(this.token, this.settings);
     const vaultId = this.vault.getName();
 
@@ -795,12 +1021,12 @@ export class SyncClient {
       try {
         const file = this.vault.getAbstractFileByPath(metaPath);
         if (file) {
-          await this.fileManager.trashFile(file);
+          await this.writeSelfPath(metaPath, () => this.fileManager.trashFile(file));
           deleteCount++;
         } else if (await this.vault.adapter.exists(metaPath)) {
           // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
           // is the only option.
-          await this.vault.adapter.remove(metaPath);
+          await this.writeSelfPath(metaPath, () => this.vault.adapter.remove(metaPath));
           deleteCount++;
         }
       } catch (e: unknown) {
@@ -813,181 +1039,82 @@ export class SyncClient {
 
     // 4. UploadFiles -- true client-streaming (#4_옵션B_구현_계획.md 설계 B) when the browser and
     // configured connection support it, falling back to batched gRPC-Web unary requests (#4 옵션
-    // A) otherwise. Both paths report acks through the same callback/progress logic.
-    let uploadAcksProcessed = 0;
-    const onUploadAck = (ack: pb.UploadAck): void => {
-      const ackPath = ack.getPath();
-      if (ack.getOk()) {
-        uploadCount++;
-        if (this.deletedFiles[ackPath]) {
-          delete this.deletedFiles[ackPath];
-        }
-      } else {
-        console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
+    // A) otherwise. A file that comes back with ack.ok === false (or whose ack never arrives
+    // because the whole batch/stream errored) is retried a couple more times *within this same
+    // sync call* before being given up on -- previously a single per-file failure was only logged
+    // and silently dropped, so it took a whole separate manual sync (a fresh Delta) to pick it
+    // back up, which is what made large/concurrent syncs look like they needed repeated manual
+    // triggers to actually finish.
+    const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
+    const UPLOAD_RETRY_ATTEMPTS = 2;
+    let pathsToUpload = needUploadList;
+    for (let attempt = 0; pathsToUpload.length > 0 && attempt <= UPLOAD_RETRY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const message = `Retrying ${pathsToUpload.length} failed upload(s), attempt ${attempt}/${UPLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToUpload)}`;
+        console.debug(message);
+        this.onLog?.("debug", message);
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
       }
-      this.reportProgress("upload", ++uploadAcksProcessed, needUploadList.length);
-    };
+      let uploadAcksProcessed = 0;
+      const failedThisAttempt: string[] = [];
+      const onUploadAck = (ack: pb.UploadAck): void => {
+        const ackPath = ack.getPath();
+        if (ack.getOk()) {
+          uploadCount++;
+          if (this.deletedFiles[ackPath]) {
+            delete this.deletedFiles[ackPath];
+          }
+        } else {
+          console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
+          failedThisAttempt.push(ackPath);
+        }
+        if (attempt === 0) this.reportProgress("upload", ++uploadAcksProcessed, pathsToUpload.length);
+      };
 
-    if (supportsStreamingUpload(this.settings)) {
-      await this.uploadFilesStreaming(needUploadList, vaultId, scannedWireBuffers, onUploadAck);
-    } else {
-      // Split into multiple batches bounded by byte size and file count. A single UploadBatch
-      // covering the whole first-sync upload set would otherwise have to sit fully serialized in
-      // memory before the first byte goes out; per the benchmark in #4_구현_계획.md (real
-      // generated protobuf classes, ~1.1GB synthetic upload), batching this cut peak RSS by ~17x
-      // and was *faster* to prepare/serialize too, not slower -- avoiding the reallocation cost
-      // of building one huge array/message. MAX_FILES_PER_BATCH exists because byte size alone
-      // isn't enough of a cap: a real vault is dominated by many small notes, so a byte-only cap
-      // let one batch swallow 95%+ of the file list in that same benchmark.
-      const BATCH_TARGET_BYTES = 20 * 1024 * 1024;
-      const MAX_FILES_PER_BATCH = 500;
-      const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
-      const uploadBatches = groupIntoBatches(needUploadList, (p) => sizeByPath.get(p) ?? 0, BATCH_TARGET_BYTES, MAX_FILES_PER_BATCH);
-
-      for (const batchPaths of uploadBatches) {
-        const uploadBatch = new pb.UploadBatch();
-
-        // Same fix as the scan step above and for the same reason: reading/hashing each file to
-        // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This
-        // overlaps them instead. mapWithConcurrency preserves per-item result order, so
-        // flattening perFileChunks reproduces exactly the same overall chunk sequence the old
-        // sequential loop would have -- each file's own [header, data..., eof] triplet stays
-        // intact and in order, only which files finish preparing in what wall-clock order changes.
-        const UPLOAD_PREP_CONCURRENCY = 8;
-        const perFileChunks = await mapWithConcurrency(batchPaths, UPLOAD_PREP_CONCURRENCY, (uploadPath) =>
-          this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
-        );
-
-        uploadBatch.setChunksList(perFileChunks.flat());
-
-        // Handle the server's streaming response for this one batch before preparing the next --
-        // deliberately sequential (no pipelining of batch N+1's prep against batch N's send/ack
-        // wait) for this first version; see #4_구현_계획.md "향후 개선" for why that tradeoff was
-        // deferred rather than built without measuring it first.
-        await new Promise<void>((resolve, reject) => {
-          const uploadStream = this.client.uploadFiles(uploadBatch, metadata);
-          uploadStream.on("data", onUploadAck);
-          uploadStream.on("end", () => resolve());
-          uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
-        });
+      try {
+        await this.uploadFileBatch(pathsToUpload, vaultId, scannedWireBuffers, sizeByPath, onUploadAck);
+        pathsToUpload = failedThisAttempt;
+      } catch (e: unknown) {
+        // The whole batch/stream errored (e.g. connection drop mid-upload) rather than an
+        // individual file coming back with ok=false -- every path in this attempt is unaccounted
+        // for, so all of them are candidates for the next retry pass.
+        console.error("Upload batch failed:", e);
       }
     }
+    const failedUploadPaths = pathsToUpload;
+    if (failedUploadPaths.length > 0) {
+      const message = `${failedUploadPaths.length} upload(s) still failing after ${UPLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(failedUploadPaths)}`;
+      console.warn(message);
+      this.onLog?.("warn", message);
+    }
 
-    // 5. DownloadFiles (gRPC-Web batch request)
+    // 5. DownloadFiles (gRPC-Web batch request) -- same within-sync retry treatment as uploads
+    // above, for the same reason (hash mismatch, save error, or a batch-level stream error).
     const filesToDownload = needDownloadList.filter((f) => !f.getIsDeleted());
-    if (filesToDownload.length > 0) {
-      const downloadReq = new pb.DownloadBatchRequest();
-      downloadReq.setVaultId(vaultId);
-      downloadReq.setPathsList(filesToDownload.map((f) => f.getPath()));
-
-      let downloadsProcessed = 0;
-      await new Promise<void>((resolve, reject) => {
-        const downloadStream = this.client.downloadFiles(downloadReq, metadata);
-        const fileBuffers = new Map<string, { mtime: number; chunks: Uint8Array[] }>();
-
-        // Wrapped so the listener itself stays synchronous (as EventEmitter#on expects) while the
-        // async body inside is still fully error-guarded -- an unguarded throw in here (e.g. the
-        // sha256 call below) would otherwise become an unhandled promise rejection instead of the
-        // same "log and move on to the next file" handling every other failure path here gets.
-        downloadStream.on("data", (chunk: pb.FileChunk) => {
-          void (async () => {
-          try {
-          if (chunk.hasHeader()) {
-            const header = chunk.getHeader()!;
-            fileBuffers.set(header.getPath(), {
-              mtime: Number(header.getModifiedAtMs()),
-              chunks: [],
-            });
-          } else if (chunk.hasData()) {
-            const dataPayload = chunk.getData()!;
-            const buf = fileBuffers.get(dataPayload.getPath());
-            if (buf) {
-              buf.chunks.push(dataPayload.getData_asU8());
-            }
-          } else if (chunk.hasEof()) {
-            const eofPayload = chunk.getEof()!;
-            const eofPath = eofPayload.getPath();
-            const buf = fileBuffers.get(eofPath);
-            if (!buf) return;
-
-            const fileDataBytes = concatUint8Arrays(buf.chunks);
-            fileBuffers.delete(eofPath);
-            this.reportProgress("download", ++downloadsProcessed, filesToDownload.length);
-
-            const calculatedHash = await sha256(fileDataBytes.buffer as ArrayBuffer);
-            if (calculatedHash !== eofPayload.getContentHash()) {
-              console.error(`Hash verification failed for downloaded file: ${eofPath}`);
-              return;
-            }
-
-            try {
-              const currentPath = eofPath;
-              const currentMtime = buf.mtime;
-
-              const dir = pathUtil.dirname(currentPath);
-              await ensureFolder(this.vault, dir);
-
-              const exists = await existsByPath(this.vault, currentPath);
-              if (exists) {
-                if (this.settings.conflictResolution === "client-wins") {
-                  return;
-                }
-                if (this.settings.conflictResolution === "manual") {
-                  try {
-                    const oldData = await readBinaryByPath(this.vault, currentPath);
-                    const ext = pathUtil.extname(currentPath);
-                    const baseName = currentPath.substring(0, currentPath.length - ext.length);
-                    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-                    const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
-                    await writeBinaryByPath(this.vault, conflictPath, oldData);
-                    new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
-                  } catch (backupErr) {
-                    console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
-                  }
-                }
-              }
-
-              let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
-              // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
-              // as-is for the cache when E2EE is off, since it's then already the plaintext hash
-              // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
-              // the buffer's already in memory).
-              let plainHashForCache = calculatedHash;
-              if (this.settings.enableE2EE && this.settings.e2eePassword) {
-                const key = await this.getE2eeKey();
-                plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
-                plainHashForCache = await sha256(plainData);
-              }
-
-              // mtime is set here, atomically, via Obsidian's own write options -- works the same
-              // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
-              await writeBinaryByPath(this.vault, currentPath, plainData, currentMtime);
-
-              // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
-              // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
-              if (this.hashCache) {
-                const written = this.vault.getAbstractFileByPath(currentPath);
-                if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
-              }
-
-              downloadCount++;
-
-              if (this.deletedFiles[currentPath]) {
-                delete this.deletedFiles[currentPath];
-              }
-            } catch (e: unknown) {
-              console.error(`Failed to save downloaded file ${eofPath}:`, e);
-            }
-          }
-          } catch (e: unknown) {
-            console.error("Failed to process downloaded chunk:", e);
-          }
-          })();
-        });
-
-        downloadStream.on("end", () => resolve());
-        downloadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
-      });
+    const DOWNLOAD_RETRY_ATTEMPTS = 2;
+    let pathsToDownload = filesToDownload.map((f) => f.getPath());
+    for (let attempt = 0; pathsToDownload.length > 0 && attempt <= DOWNLOAD_RETRY_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const message = `Retrying ${pathsToDownload.length} failed download(s), attempt ${attempt}/${DOWNLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToDownload)}`;
+        console.debug(message);
+        this.onLog?.("debug", message);
+        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+      }
+      try {
+        const { downloadedCount, failedPaths } = await this.downloadFileBatch(pathsToDownload, vaultId);
+        downloadCount += downloadedCount;
+        pathsToDownload = failedPaths;
+      } catch (e: unknown) {
+        console.error("Download batch failed:", e);
+        // Same reasoning as the upload branch above: an errored batch leaves every path in it
+        // unaccounted for, so they all remain retry candidates.
+      }
+    }
+    const failedDownloadPaths = pathsToDownload;
+    if (failedDownloadPaths.length > 0) {
+      const message = `${failedDownloadPaths.length} download(s) still failing after ${DOWNLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(failedDownloadPaths)}`;
+      console.warn(message);
+      this.onLog?.("warn", message);
     }
 
     // 6. Persist the updated deletion-history state
@@ -997,6 +1124,7 @@ export class SyncClient {
       uploaded: uploadCount,
       downloaded: downloadCount,
       deleted: deleteCount,
+      failed: failedUploadPaths.length + failedDownloadPaths.length,
     };
   }
 

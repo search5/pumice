@@ -3,6 +3,7 @@ import type { SettingDefinitionItem } from "obsidian";
 import type SyncPlugin from "./main";
 import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
+import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 
 export class SyncSettingTab extends PluginSettingTab {
@@ -250,6 +251,13 @@ export class SyncSettingTab extends PluginSettingTab {
             // enough here, just to keep the action itself void-returning as expected.
             action: () => {
               void this.plugin.syncNow();
+            },
+          },
+          {
+            name: t("settings.option-diagnostics-log", "Diagnostics log"),
+            desc: t("settings.option-diagnostics-log-desc", "View retries, skipped self-triggered events, and queued syncs recorded during past syncs"),
+            action: () => {
+              new SyncDiagnosticsModal(this.app, this.plugin).open();
             },
           },
         ],
@@ -630,6 +638,17 @@ export class SyncSettingTab extends PluginSettingTab {
           .setCta()
           .onClick(async () => {
             await this.plugin.syncNow();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t("settings.option-diagnostics-log", "Diagnostics log"))
+      .setDesc(t("settings.option-diagnostics-log-desc", "View retries, skipped self-triggered events, and queued syncs recorded during past syncs"))
+      .addButton((btn) =>
+        btn
+          .setButtonText(t("settings.button-view-diagnostics-log", "View log"))
+          .onClick(() => {
+            new SyncDiagnosticsModal(this.app, this.plugin).open();
           })
       );
   }

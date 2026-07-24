@@ -7,6 +7,8 @@ import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
 import { ContentHashCache } from "./contentHashCache";
+import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
+import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 
@@ -62,6 +64,7 @@ export default class SyncPlugin extends Plugin {
   deletedFiles: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
+  syncDiagnosticsLog!: SyncDiagnosticsLog;
   settingTab!: SyncSettingTab;
   // Explicit `number`, not ReturnType<typeof window.setInterval/setTimeout>: with @types/node
   // present (for esbuild.config.mjs), that resolves to Node's Timeout instead of the browser's
@@ -70,10 +73,24 @@ export default class SyncPlugin extends Plugin {
   private autoSyncTimer: number | null = null;
   private debounceTimer: number | null = null;
   private ribbonReplaceTimers: number[] = [];
+  // Paths the in-progress sync is currently writing to the vault itself -- shared with SyncClient
+  // (see syncClient.ts's writeSelfPath) so the vault event listeners below can tell "sync just
+  // wrote this" apart from a genuine local edit and skip re-arming the debounced sync for it.
+  // Without this, every downloaded file (or applied server-side deletion) looked identical to the
+  // user having just edited it, so a sync that pulled anything down always queued a pointless
+  // extra sync 3 seconds later.
+  private selfWritePaths: Set<string> = new Set();
+  // Prevents overlapping syncNow() calls (manual click racing the debounce timer or the auto-sync
+  // interval, or two manual clicks in a row) from each computing their own independent Delta and
+  // stepping on each other -- a request to sync while one is already running is queued instead,
+  // and runs once the current one finishes.
+  private isSyncing = false;
+  private syncQueuedWhileRunning = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.hasStoredToken = await hasToken(this.app);
+    this.syncDiagnosticsLog = new SyncDiagnosticsLog(this.app);
     this.settingTab = new SyncSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
 
@@ -149,6 +166,12 @@ export default class SyncPlugin extends Plugin {
       callback: () => new PublishModal(this.app, this).open(),
     });
 
+    this.addCommand({
+      id: "open-sync-diagnostics-log",
+      name: t("plugins.sync.action-open-diagnostics-log", "Open sync diagnostics log"),
+      callback: () => new SyncDiagnosticsModal(this.app, this).open(),
+    });
+
     this.addRibbonIcon("refresh-cw", vaultSyncRibbonLabel(), () => this.syncNow());
     this.addRibbonIcon("paper-plane", t("plugins.publish.action-publish-changes", "Publish changes"), () =>
       new PublishModal(this.app, this).open()
@@ -199,6 +222,14 @@ export default class SyncPlugin extends Plugin {
     // Register file-change event listeners (tombstone tracking + smart debounced live sync)
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
+        // A sync applying a server-side deletion (fileManager.trashFile/adapter.remove in
+        // syncClient.ts) fires this same event -- without this check it looked identical to the
+        // user deleting the file themselves, re-adding a tombstone for a deletion sync had just
+        // finished reconciling and queuing a needless follow-up sync.
+        if (this.selfWritePaths.has(file.path)) {
+          this.logDebug(`Ignoring self-triggered "delete" event for ${file.path} (sync is applying this itself)`);
+          return;
+        }
         this.deletedFiles[file.path] = Date.now();
         void this.savePluginData();
         this.triggerDebouncedSync();
@@ -207,6 +238,10 @@ export default class SyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
+        if (this.selfWritePaths.has(file.path) || this.selfWritePaths.has(oldPath)) {
+          this.logDebug(`Ignoring self-triggered "rename" event for ${oldPath} -> ${file.path} (sync is applying this itself)`);
+          return;
+        }
         // Skip tombstone creation when an Obsidian auto-created note (Untitled/무제) gets renamed
         // right away, so we don't spuriously mark it as deleted.
         const baseName = pathUtil.basename(oldPath, ".md");
@@ -222,6 +257,12 @@ export default class SyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("create", (file) => {
+        // Same reasoning as "delete" above -- a downloaded file that's new to this device fires
+        // "create", not "modify".
+        if (this.selfWritePaths.has(file.path)) {
+          this.logDebug(`Ignoring self-triggered "create" event for ${file.path} (sync is applying this itself)`);
+          return;
+        }
         delete this.deletedFiles[file.path];
         void this.savePluginData();
         this.triggerDebouncedSync();
@@ -230,6 +271,12 @@ export default class SyncPlugin extends Plugin {
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
+        // Same reasoning as "delete" above -- an existing file a sync just overwrote with the
+        // server's content fires "modify" exactly like a real local edit would.
+        if (this.selfWritePaths.has(file.path)) {
+          this.logDebug(`Ignoring self-triggered "modify" event for ${file.path} (sync is applying this itself)`);
+          return;
+        }
         this.triggerDebouncedSync();
       })
     );
@@ -332,7 +379,11 @@ export default class SyncPlugin extends Plugin {
         this.deletedFiles = deleted;
         await this.savePluginData();
       },
-      this.contentHashCache
+      this.contentHashCache,
+      undefined,
+      undefined,
+      this.selfWritePaths,
+      (level, message) => this.syncDiagnosticsLog.log(level, message)
     );
   }
 
@@ -408,57 +459,85 @@ export default class SyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
-    const token = await this.getToken();
-    if (!token) {
-      new Notice(t("settings.msg-no-token", "No sync token is set."));
+    // A sync already in flight (manual click racing the debounce timer / auto-sync interval, or
+    // two triggers in quick succession) is not started a second time in parallel -- each one would
+    // compute its own independent Delta and step on the other's writes. Instead this request is
+    // queued and runs once, right after the current one finishes, so concurrent client/server
+    // changes still converge without the user needing to notice and retry manually.
+    if (this.isSyncing) {
+      this.logDebug("Sync already in progress -- queuing this request to run once it finishes");
+      this.syncQueuedWhileRunning = true;
       return;
     }
-
-    const phaseLabel: Record<SyncProgressPhase, string> = {
-      scan: t("plugins.sync.label-phase-scan", "scan"),
-      upload: t("plugins.sync.label-phase-upload", "upload"),
-      download: t("plugins.sync.label-phase-download", "download"),
-    };
-    // duration=0 keeps this Notice open until hide() is called below, so it can be updated in
-    // place as progress comes in instead of the old fire-and-forget start/end Notice pair.
-    const progressNotice = new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
-
+    this.isSyncing = true;
     try {
-      const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
-      const client = new SyncClient(
-        this.app.vault,
-        this.app.fileManager,
-        pluginDir,
-        token,
-        { ...this.settings, e2eePassword: this.e2eePassword },
-        this.deletedFiles,
-        async (deleted) => {
-          this.deletedFiles = deleted;
-          await this.savePluginData();
-        },
-        this.contentHashCache,
-        ({ phase, done, total }) => {
-          progressNotice.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
-        },
-        ({ delayMs, retriesLeft }) => {
-          // Reuses the same progressNotice instead of popping up a separate toast on top of it.
-          progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
-        }
-      );
+      const token = await this.getToken();
+      if (!token) {
+        new Notice(t("settings.msg-no-token", "No sync token is set."));
+        return;
+      }
 
-      const result = await client.sync();
-      progressNotice.hide();
-      new Notice(
-        t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
-          uploaded: result.uploaded,
-          downloaded: result.downloaded,
-          deleted: result.deleted,
-        })
-      );
-    } catch (e: unknown) {
-      progressNotice.hide();
-      console.error("Sync failed:", e);
-      new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
+      const phaseLabel: Record<SyncProgressPhase, string> = {
+        scan: t("plugins.sync.label-phase-scan", "scan"),
+        upload: t("plugins.sync.label-phase-upload", "upload"),
+        download: t("plugins.sync.label-phase-download", "download"),
+      };
+      // duration=0 keeps this Notice open until hide() is called below, so it can be updated in
+      // place as progress comes in instead of the old fire-and-forget start/end Notice pair.
+      const progressNotice = new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
+
+      try {
+        const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+        const client = new SyncClient(
+          this.app.vault,
+          this.app.fileManager,
+          pluginDir,
+          token,
+          { ...this.settings, e2eePassword: this.e2eePassword },
+          this.deletedFiles,
+          async (deleted) => {
+            this.deletedFiles = deleted;
+            await this.savePluginData();
+          },
+          this.contentHashCache,
+          ({ phase, done, total }) => {
+            progressNotice.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
+          },
+          ({ delayMs, retriesLeft }) => {
+            // Reuses the same progressNotice instead of popping up a separate toast on top of it.
+            progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
+          },
+          this.selfWritePaths,
+          (level, message) => this.syncDiagnosticsLog.log(level, message)
+        );
+
+        const result = await client.sync();
+        progressNotice.hide();
+        new Notice(
+          result.failed > 0
+            ? t(
+                "settings.msg-sync-complete-with-failed",
+                "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted, {{failed}} failed after retrying",
+                { uploaded: result.uploaded, downloaded: result.downloaded, deleted: result.deleted, failed: result.failed }
+              )
+            : t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
+                uploaded: result.uploaded,
+                downloaded: result.downloaded,
+                deleted: result.deleted,
+              })
+        );
+      } catch (e: unknown) {
+        progressNotice.hide();
+        console.error("Sync failed:", e);
+        new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
+      }
+    } finally {
+      this.isSyncing = false;
+      if (this.syncQueuedWhileRunning) {
+        this.syncQueuedWhileRunning = false;
+        this.logDebug("Running the sync that was queued while the previous one was in progress");
+        void this.syncNow();
+      }
     }
   }
 
@@ -480,6 +559,13 @@ export default class SyncPlugin extends Plugin {
     if (this.settings.autoSync) {
       this.startAutoSync();
     }
+  }
+
+  // Mirrors a debug message to both the live console (for watching in real time) and
+  // syncDiagnosticsLog (for checking afterward -- see SyncDiagnosticsModal).
+  private logDebug(message: string): void {
+    console.debug(message);
+    this.syncDiagnosticsLog.log("debug", message);
   }
 
   triggerDebouncedSync(): void {
