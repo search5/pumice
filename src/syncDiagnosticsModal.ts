@@ -3,6 +3,7 @@ import type SyncPlugin from "./main";
 import type { SyncLogEntry } from "./syncDiagnosticsLog";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
+import { setButtonWarning } from "./legacyApi";
 
 function formatLine(entry: SyncLogEntry): string {
   return `[${moment(entry.ts).format("YYYY-MM-DD HH:mm:ss")}] ${entry.level.toUpperCase()} ${entry.message}`;
@@ -51,13 +52,12 @@ export class SyncDiagnosticsModal extends Modal {
           new Notice(t("plugins.sync.msg-copy-failed", "Copy failed: {{error}}", { error: errorMessage(e) }));
         }
       });
-    new ButtonComponent(buttonRow)
-      .setButtonText(t("plugins.sync.action-clear-log", "Clear log"))
-      .setWarning()
-      .onClick(() => {
-        this.plugin.syncDiagnosticsLog.clear();
-        this.render();
-      });
+    const clearButton = new ButtonComponent(buttonRow).setButtonText(t("plugins.sync.action-clear-log", "Clear log"));
+    setButtonWarning(clearButton);
+    clearButton.onClick(() => {
+      this.plugin.syncDiagnosticsLog.clear();
+      this.render();
+    });
 
     const listEl = contentEl.createDiv({ cls: "grpc-sync-diagnostics-list" });
     if (entries.length === 0) {

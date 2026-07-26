@@ -129,7 +129,7 @@ protoc \
 
 | 설정 | 기본값 | 설명 |
 |---------|---------|-------------|
-| serverHost | localhost | gRPC 서버 주소 |
+| serverHost | localhost | Pumice 서버 주소 |
 | serverPort | 8080 | HTTP + gRPC-Web 포트 |
 | useTls | false | TLS 사용(원격 서버라면 권장) |
 | deviceName | Obsidian Client | 이 기기를 식별하는 이름 |

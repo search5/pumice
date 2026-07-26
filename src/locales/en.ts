@@ -132,7 +132,7 @@ export const en: Record<string, string> = {
   "settings.option-device-name": "Device name",
   "settings.option-device-name-desc": "Device name shown in sync history",
   "settings.option-server-host": "Server address",
-  "settings.option-server-host-desc": "Hostname or IP of the gRPC server",
+  "settings.option-server-host-desc": "Hostname or IP of the Pumice server",
   "settings.option-server-port": "Server port",
   "settings.option-server-port-desc": "Combined sync and HTTP server port (default: 8080)",
   "settings.option-use-tls": "Use TLS",
