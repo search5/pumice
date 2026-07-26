@@ -1037,85 +1037,90 @@ export class SyncClient {
       }
     }
 
-    // 4. UploadFiles -- true client-streaming (#4_옵션B_구현_계획.md 설계 B) when the browser and
-    // configured connection support it, falling back to batched gRPC-Web unary requests (#4 옵션
-    // A) otherwise. A file that comes back with ack.ok === false (or whose ack never arrives
-    // because the whole batch/stream errored) is retried a couple more times *within this same
-    // sync call* before being given up on -- previously a single per-file failure was only logged
-    // and silently dropped, so it took a whole separate manual sync (a fresh Delta) to pick it
-    // back up, which is what made large/concurrent syncs look like they needed repeated manual
-    // triggers to actually finish.
+    // 4 & 5. UploadFiles and DownloadFiles run concurrently, not sequentially -- a path is only
+    // ever need-upload XOR need-download XOR neither (the server's Delta() resolves every path to
+    // exactly one bucket via hash/mtime comparison, see pumice-server's service.py), so the two
+    // sets are always disjoint and can never race on the same file. Each keeps its own in-pass
+    // retry loop (a file that comes back with ack.ok === false, or a hash mismatch/save error on
+    // download, is retried a couple more times *within this same sync call* before being given up
+    // on -- previously a single per-file failure was only logged and silently dropped, so it took
+    // a whole separate manual sync (a fresh Delta) to pick it back up).
     const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
-    const UPLOAD_RETRY_ATTEMPTS = 2;
-    let pathsToUpload = needUploadList;
-    for (let attempt = 0; pathsToUpload.length > 0 && attempt <= UPLOAD_RETRY_ATTEMPTS; attempt++) {
-      if (attempt > 0) {
-        const message = `Retrying ${pathsToUpload.length} failed upload(s), attempt ${attempt}/${UPLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToUpload)}`;
-        console.debug(message);
-        this.onLog?.("debug", message);
-        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
-      }
-      let uploadAcksProcessed = 0;
-      const failedThisAttempt: string[] = [];
-      const onUploadAck = (ack: pb.UploadAck): void => {
-        const ackPath = ack.getPath();
-        if (ack.getOk()) {
-          uploadCount++;
-          if (this.deletedFiles[ackPath]) {
-            delete this.deletedFiles[ackPath];
-          }
-        } else {
-          console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
-          failedThisAttempt.push(ackPath);
-        }
-        if (attempt === 0) this.reportProgress("upload", ++uploadAcksProcessed, pathsToUpload.length);
-      };
-
-      try {
-        await this.uploadFileBatch(pathsToUpload, vaultId, scannedWireBuffers, sizeByPath, onUploadAck);
-        pathsToUpload = failedThisAttempt;
-      } catch (e: unknown) {
-        // The whole batch/stream errored (e.g. connection drop mid-upload) rather than an
-        // individual file coming back with ok=false -- every path in this attempt is unaccounted
-        // for, so all of them are candidates for the next retry pass.
-        console.error("Upload batch failed:", e);
-      }
-    }
-    const failedUploadPaths = pathsToUpload;
-    if (failedUploadPaths.length > 0) {
-      const message = `${failedUploadPaths.length} upload(s) still failing after ${UPLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(failedUploadPaths)}`;
-      console.warn(message);
-      this.onLog?.("warn", message);
-    }
-
-    // 5. DownloadFiles (gRPC-Web batch request) -- same within-sync retry treatment as uploads
-    // above, for the same reason (hash mismatch, save error, or a batch-level stream error).
     const filesToDownload = needDownloadList.filter((f) => !f.getIsDeleted());
-    const DOWNLOAD_RETRY_ATTEMPTS = 2;
-    let pathsToDownload = filesToDownload.map((f) => f.getPath());
-    for (let attempt = 0; pathsToDownload.length > 0 && attempt <= DOWNLOAD_RETRY_ATTEMPTS; attempt++) {
-      if (attempt > 0) {
-        const message = `Retrying ${pathsToDownload.length} failed download(s), attempt ${attempt}/${DOWNLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToDownload)}`;
-        console.debug(message);
-        this.onLog?.("debug", message);
-        await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+
+    const runUploads = async (): Promise<string[]> => {
+      const UPLOAD_RETRY_ATTEMPTS = 2;
+      let pathsToUpload = needUploadList;
+      for (let attempt = 0; pathsToUpload.length > 0 && attempt <= UPLOAD_RETRY_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          const message = `Retrying ${pathsToUpload.length} failed upload(s), attempt ${attempt}/${UPLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToUpload)}`;
+          console.debug(message);
+          this.onLog?.("debug", message);
+          await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+        }
+        let uploadAcksProcessed = 0;
+        const failedThisAttempt: string[] = [];
+        const onUploadAck = (ack: pb.UploadAck): void => {
+          const ackPath = ack.getPath();
+          if (ack.getOk()) {
+            uploadCount++;
+            if (this.deletedFiles[ackPath]) {
+              delete this.deletedFiles[ackPath];
+            }
+          } else {
+            console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
+            failedThisAttempt.push(ackPath);
+          }
+          if (attempt === 0) this.reportProgress("upload", ++uploadAcksProcessed, pathsToUpload.length);
+        };
+
+        try {
+          await this.uploadFileBatch(pathsToUpload, vaultId, scannedWireBuffers, sizeByPath, onUploadAck);
+          pathsToUpload = failedThisAttempt;
+        } catch (e: unknown) {
+          // The whole batch/stream errored (e.g. connection drop mid-upload) rather than an
+          // individual file coming back with ok=false -- every path in this attempt is unaccounted
+          // for, so all of them are candidates for the next retry pass.
+          console.error("Upload batch failed:", e);
+        }
       }
-      try {
-        const { downloadedCount, failedPaths } = await this.downloadFileBatch(pathsToDownload, vaultId);
-        downloadCount += downloadedCount;
-        pathsToDownload = failedPaths;
-      } catch (e: unknown) {
-        console.error("Download batch failed:", e);
-        // Same reasoning as the upload branch above: an errored batch leaves every path in it
-        // unaccounted for, so they all remain retry candidates.
+      if (pathsToUpload.length > 0) {
+        const message = `${pathsToUpload.length} upload(s) still failing after ${UPLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(pathsToUpload)}`;
+        console.warn(message);
+        this.onLog?.("warn", message);
       }
-    }
-    const failedDownloadPaths = pathsToDownload;
-    if (failedDownloadPaths.length > 0) {
-      const message = `${failedDownloadPaths.length} download(s) still failing after ${DOWNLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(failedDownloadPaths)}`;
-      console.warn(message);
-      this.onLog?.("warn", message);
-    }
+      return pathsToUpload;
+    };
+
+    const runDownloads = async (): Promise<string[]> => {
+      const DOWNLOAD_RETRY_ATTEMPTS = 2;
+      let pathsToDownload = filesToDownload.map((f) => f.getPath());
+      for (let attempt = 0; pathsToDownload.length > 0 && attempt <= DOWNLOAD_RETRY_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+          const message = `Retrying ${pathsToDownload.length} failed download(s), attempt ${attempt}/${DOWNLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToDownload)}`;
+          console.debug(message);
+          this.onLog?.("debug", message);
+          await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+        }
+        try {
+          const { downloadedCount, failedPaths } = await this.downloadFileBatch(pathsToDownload, vaultId);
+          downloadCount += downloadedCount;
+          pathsToDownload = failedPaths;
+        } catch (e: unknown) {
+          console.error("Download batch failed:", e);
+          // Same reasoning as the upload branch above: an errored batch leaves every path in it
+          // unaccounted for, so they all remain retry candidates.
+        }
+      }
+      if (pathsToDownload.length > 0) {
+        const message = `${pathsToDownload.length} download(s) still failing after ${DOWNLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(pathsToDownload)}`;
+        console.warn(message);
+        this.onLog?.("warn", message);
+      }
+      return pathsToDownload;
+    };
+
+    const [failedUploadPaths, failedDownloadPaths] = await Promise.all([runUploads(), runDownloads()]);
 
     // 6. Persist the updated deletion-history state
     await this.updateDeletedFiles(this.deletedFiles);
