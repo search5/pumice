@@ -2,7 +2,10 @@ import { SyncServiceClient } from "./generated/SyncServiceClientPb";
 import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
 import { TFile, Vault, FileManager, Notice, requestUrl } from "obsidian";
+import { createPatch, applyPatch } from "diff";
 import { ContentHashCache } from "./contentHashCache";
+import type { LastSyncedHashStore } from "./lastSyncedHashStore";
+import { isTextFilePath } from "./textFileTypes";
 import { mapWithConcurrency, streamWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
@@ -265,6 +268,7 @@ export class SyncClient {
   private deletedFiles: Record<string, number>;
   private updateDeletedFiles: (deleted: Record<string, number>) => Promise<void>;
   private hashCache?: ContentHashCache;
+  private lastSyncedHashStore?: LastSyncedHashStore;
   private onProgress?: SyncProgressCallback;
   private onRetry?: SyncRetryCallback;
   private lastProgressReportAt = 0;
@@ -395,7 +399,8 @@ export class SyncClient {
     onProgress?: SyncProgressCallback,
     onRetry?: SyncRetryCallback,
     selfWritePaths?: Set<string>,
-    onLog?: SyncLogCallback
+    onLog?: SyncLogCallback,
+    lastSyncedHashStore?: LastSyncedHashStore
   ) {
     this.vault = vault;
     this.fileManager = fileManager;
@@ -409,6 +414,7 @@ export class SyncClient {
     this.onRetry = onRetry;
     this.selfWritePaths = selfWritePaths ?? new Set<string>();
     this.onLog = onLog;
+    this.lastSyncedHashStore = lastSyncedHashStore;
 
     const protocol = settings.useTls ? "https" : "http";
     const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
@@ -699,6 +705,44 @@ export class SyncClient {
     }
   }
 
+  // Attempts a 3-way merge for a conflicting text file: diffs the last-synced "base" version
+  // against the current local content, then tries to apply that as a patch on top of the current
+  // remote content. jsdiff's applyPatch is context-aware (it locates each hunk by the unchanged
+  // lines around it) -- when local's and remote's edits are far enough apart that their context
+  // windows don't overlap, it returns the correctly-merged string with both edits intact; when
+  // they touch the same region, it returns `false`. That split *is* the overlap check, so there's
+  // no separate hand-rolled range comparison here. Returns null (meaning: fall back to the
+  // existing backup-and-overwrite behavior) whenever a merge can't even be attempted -- not a
+  // text file, no recorded last-synced hash for this path, or that base version has since been
+  // pruned from server history -- as well as when applyPatch itself reports a real conflict.
+  private async tryAutoMergeConflict(path: string, remotePlainData: ArrayBuffer): Promise<string | null> {
+    if (!isTextFilePath(path) || !this.lastSyncedHashStore) return null;
+
+    try {
+      const baseHash = await this.lastSyncedHashStore.get(path);
+      if (!baseHash) return null;
+
+      const history = await this.getFileHistory(path);
+      const baseEntry = history.find((h) => h.content_hash === baseHash && !h.deleted);
+      if (!baseEntry) return null;
+
+      const baseData = await this.downloadHistoryVersion(path, baseEntry.history_id);
+      const localData = await readBinaryByPath(this.vault, path);
+
+      const decoder = new TextDecoder("utf-8");
+      const baseText = decoder.decode(baseData);
+      const localText = decoder.decode(localData);
+      const remoteText = decoder.decode(remotePlainData);
+
+      const patch = createPatch(path, baseText, localText);
+      const merged = applyPatch(remoteText, patch);
+      return merged === false ? null : merged;
+    } catch (e: unknown) {
+      console.error(`Merge attempt failed for ${path}, falling back to conflict backup:`, e);
+      return null;
+    }
+  }
+
   // Downloads exactly `paths`, same shrinking-list-on-retry usage as uploadFileBatch above.
   // Per-file failures (hash mismatch, save error) are collected into `failedPaths` and returned
   // rather than thrown, so one bad file doesn't lose the rest of the batch.
@@ -762,11 +806,52 @@ export class SyncClient {
             await ensureFolder(this.vault, dir);
 
             const exists = await existsByPath(this.vault, currentPath);
+            if (exists && this.settings.conflictResolution === "client-wins") {
+              return;
+            }
+
+            let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
+            // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
+            // as-is for the cache when E2EE is off, since it's then already the plaintext hash
+            // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
+            // the buffer's already in memory). Computed up front (moved ahead of the conflict
+            // check below) since the "merge" conflict mode needs this plaintext as the "remote"
+            // side of a 3-way merge, not just for the eventual write.
+            let plainHashForCache = calculatedHash;
+            if (this.settings.enableE2EE && this.settings.e2eePassword) {
+              const key = await this.getE2eeKey();
+              plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
+              plainHashForCache = await sha256(plainData);
+            }
+
+            let handledByMerge = false;
+
             if (exists) {
-              if (this.settings.conflictResolution === "client-wins") {
-                return;
+              let needsBackupAndOverwrite = this.settings.conflictResolution === "manual";
+
+              if (this.settings.conflictResolution === "merge") {
+                const mergedText = await this.tryAutoMergeConflict(currentPath, plainData);
+                if (mergedText !== null) {
+                  const mergedData = new TextEncoder().encode(mergedText).buffer;
+                  // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
+                  // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
+                  // the merged result through the ordinary upload path on the next pass -- no
+                  // special immediate-reupload plumbing needed, since this write's mtime will be
+                  // newer than the server's stored version and Delta will naturally resolve it to
+                  // need_upload next time.
+                  await writeBinaryByPath(this.vault, currentPath, mergedData);
+                  new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
+                  const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+                  if (this.hashCache && mergedFile instanceof TFile) {
+                    this.hashCache.set(mergedFile, await sha256(mergedData));
+                  }
+                  handledByMerge = true;
+                } else {
+                  needsBackupAndOverwrite = true;
+                }
               }
-              if (this.settings.conflictResolution === "manual") {
+
+              if (needsBackupAndOverwrite) {
                 try {
                   const oldData = await readBinaryByPath(this.vault, currentPath);
                   const ext = pathUtil.extname(currentPath);
@@ -781,27 +866,25 @@ export class SyncClient {
               }
             }
 
-            let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
-            // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
-            // as-is for the cache when E2EE is off, since it's then already the plaintext hash
-            // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
-            // the buffer's already in memory).
-            let plainHashForCache = calculatedHash;
-            if (this.settings.enableE2EE && this.settings.e2eePassword) {
-              const key = await this.getE2eeKey();
-              plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
-              plainHashForCache = await sha256(plainData);
-            }
+            if (!handledByMerge) {
+              // mtime is set here, atomically, via Obsidian's own write options -- works the same
+              // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
+              await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, plainData, currentMtime));
 
-            // mtime is set here, atomically, via Obsidian's own write options -- works the same
-            // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
-            await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, plainData, currentMtime));
+              // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
+              // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
+              if (this.hashCache) {
+                const written = this.vault.getAbstractFileByPath(currentPath);
+                if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
+              }
 
-            // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
-            // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
-            if (this.hashCache) {
-              const written = this.vault.getAbstractFileByPath(currentPath);
-              if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
+              // Only recorded as "confirmed in sync with server" when the server's own content was
+              // taken as-is -- a merge produces content the server doesn't have yet, so that path
+              // must not be marked synced until the merged result is actually uploaded. Keyed on
+              // calculatedHash (the wire/ciphertext hash under E2EE, same as plain hash otherwise)
+              // to match the hash space Delta/history use server-side -- NOT plainHashForCache,
+              // which is deliberately the plaintext hash instead (see its own comment above).
+              this.lastSyncedHashStore?.set(currentPath, calculatedHash);
             }
 
             downloadedCount++;
@@ -1046,6 +1129,7 @@ export class SyncClient {
     // on -- previously a single per-file failure was only logged and silently dropped, so it took
     // a whole separate manual sync (a fresh Delta) to pick it back up).
     const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
+    const hashByPath = new Map(localFilesMeta.map((f) => [f.path, f.content_hash]));
     const filesToDownload = needDownloadList.filter((f) => !f.getIsDeleted());
 
     const runUploads = async (): Promise<string[]> => {
@@ -1067,6 +1151,10 @@ export class SyncClient {
             if (this.deletedFiles[ackPath]) {
               delete this.deletedFiles[ackPath];
             }
+            // Records this path as confirmed in sync (the "base" a future 3-way merge diffs
+            // against) -- server now has exactly the content whose hash this is.
+            const uploadedHash = hashByPath.get(ackPath);
+            if (uploadedHash) this.lastSyncedHashStore?.set(ackPath, uploadedHash);
           } else {
             console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
             failedThisAttempt.push(ackPath);

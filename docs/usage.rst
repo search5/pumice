@@ -95,6 +95,13 @@ locally-modified file:
    * - Client wins
      - The local version is kept as-is; the incoming server version for that
        file is skipped for this sync.
+   * - Auto-merge
+     - For text files, compares each side's changes against the version both
+       sides last agreed on. If the changed regions don't overlap, both sets
+       of changes are merged automatically and re-uploaded on the next sync —
+       nothing is lost, no conflict copy needed. If they do overlap (a real
+       conflict), falls back to the same backup-and-overwrite behavior as
+       Manual.
 
 End-to-end encryption (E2EE)
 -------------------------------

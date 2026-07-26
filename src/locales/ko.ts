@@ -97,6 +97,7 @@ export const ko: Record<string, string> = {
   "plugins.sync.menu-opt-view-version-history": "버전 내역 열기",
   "plugins.sync.msg-already-latest-version": "이 버전은 이미 제일 최신 버전입니다.",
   "plugins.sync.msg-conflict-backup-created": "충돌 파일 백업 생성됨: {{filename}}",
+  "plugins.sync.msg-auto-merged": "{{filename}} 자동 병합됨 — 양쪽 변경사항 모두 반영",
   "plugins.sync.msg-copy-failed": "복사 실패: {{error}}",
   "plugins.sync.msg-restore-failed": "버전 복원 실패: {{error}}",
   "plugins.sync.label-vault-sync-ribbon": "Vault 동기화",
@@ -173,6 +174,7 @@ export const ko: Record<string, string> = {
   "settings.option-conflict-manual": "수동 (직접 선택)",
   "settings.option-conflict-server-wins": "서버 우선",
   "settings.option-conflict-client-wins": "클라이언트 우선",
+  "settings.option-conflict-merge": "자동 병합 (진짜 충돌할 때만 백업)",
 
   "settings.option-e2ee": "엔드투엔드 암호화 (E2EE)",
   "settings.option-e2ee-desc": "서버 전송 전 로컬 기기에서 파일을 대칭 키(AES-256-GCM)로 암호화합니다.",

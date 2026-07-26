@@ -1,4 +1,4 @@
-export type ConflictResolution = "server-wins" | "client-wins" | "manual";
+export type ConflictResolution = "server-wins" | "client-wins" | "manual" | "merge";
 
 export interface SyncPluginSettings {
   serverHost: string;
