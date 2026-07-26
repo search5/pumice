@@ -69,9 +69,10 @@ Running a sync
 * **On edit**: saving a file also schedules a sync a short debounce delay
   later, so changes propagate without you having to remember to trigger one.
 
-A sync walks through, in order: comparing local vs. server state (delta),
-reconciling deletions, uploading changed local files, then downloading
-changed remote files.
+A sync compares local vs. server state (delta) and reconciles deletions
+first, then uploads changed local files and downloads changed remote files
+*concurrently* — a file is only ever an upload or a download in the same
+pass, never both, so the two directions never race each other.
 
 Conflict resolution
 ----------------------
@@ -96,12 +97,16 @@ locally-modified file:
      - The local version is kept as-is; the incoming server version for that
        file is skipped for this sync.
    * - Auto-merge
-     - For text files, compares each side's changes against the version both
-       sides last agreed on. If the changed regions don't overlap, both sets
-       of changes are merged automatically and re-uploaded on the next sync —
-       nothing is lost, no conflict copy needed. If they do overlap (a real
-       conflict), falls back to the same backup-and-overwrite behavior as
-       Manual.
+     - For text files, uses the same three-way merge algorithm as ``git``:
+       each side's changes are compared against the version both sides last
+       agreed on. Non-overlapping changes are always merged automatically and
+       re-uploaded on the next sync — nothing is lost, no conflict copy
+       needed. If both sides changed the *same* lines, only that region gets
+       inline ``<<<<<<<`` / ``=======`` / ``>>>>>>>`` conflict markers (like a
+       ``git`` merge conflict) — everything else in the file still merges
+       normally around it. A backup of your pre-merge local copy is kept as
+       ``<name>.sync-conflict-<timestamp>.<ext>`` as well. Resolve the marked
+       section and save; that save is what triggers re-uploading it.
 
 End-to-end encryption (E2EE)
 -------------------------------

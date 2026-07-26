@@ -2,7 +2,7 @@ import { SyncServiceClient } from "./generated/SyncServiceClientPb";
 import * as pb from "./generated/sync_pb";
 import * as grpcWeb from "grpc-web";
 import { TFile, Vault, FileManager, Notice, requestUrl } from "obsidian";
-import { createPatch, applyPatch } from "diff";
+import { merge as mergeDiff3 } from "node-diff3";
 import { ContentHashCache } from "./contentHashCache";
 import type { LastSyncedHashStore } from "./lastSyncedHashStore";
 import { isTextFilePath } from "./textFileTypes";
@@ -705,17 +705,32 @@ export class SyncClient {
     }
   }
 
+  // Backs up `path`'s current local content to `<name>.sync-conflict-<timestamp>.<ext>` before
+  // it's about to be replaced -- shared by every conflictResolution path that needs this safety
+  // net (manual, merge's can't-attempt-at-all fallback, and merge's marked-conflict case).
+  private async backupLocalVersion(path: string): Promise<string> {
+    const oldData = await readBinaryByPath(this.vault, path);
+    const ext = pathUtil.extname(path);
+    const baseName = path.substring(0, path.length - ext.length);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
+    await writeBinaryByPath(this.vault, conflictPath, oldData);
+    return conflictPath;
+  }
+
   // Attempts a 3-way merge for a conflicting text file: diffs the last-synced "base" version
-  // against the current local content, then tries to apply that as a patch on top of the current
-  // remote content. jsdiff's applyPatch is context-aware (it locates each hunk by the unchanged
-  // lines around it) -- when local's and remote's edits are far enough apart that their context
-  // windows don't overlap, it returns the correctly-merged string with both edits intact; when
-  // they touch the same region, it returns `false`. That split *is* the overlap check, so there's
-  // no separate hand-rolled range comparison here. Returns null (meaning: fall back to the
-  // existing backup-and-overwrite behavior) whenever a merge can't even be attempted -- not a
-  // text file, no recorded last-synced hash for this path, or that base version has since been
-  // pruned from server history -- as well as when applyPatch itself reports a real conflict.
-  private async tryAutoMergeConflict(path: string, remotePlainData: ArrayBuffer): Promise<string | null> {
+  // against both the current local and current remote content (node-diff3's `merge`, the same
+  // diff3 algorithm git itself uses for merges). Non-overlapping edits from both sides are always
+  // combined automatically; where both sides changed the *same* lines, that one region gets
+  // git-style `<<<<<<<`/`=======`/`>>>>>>>` conflict markers inline instead of losing either
+  // side's edits wholesale -- everything else in the file still merges normally around it.
+  // Returns null (meaning: fall back to the old backup-and-overwrite-with-remote behavior)
+  // only when a merge can't be attempted at all -- not a text file, no recorded last-synced hash
+  // for this path, or that base version has since been pruned from server history.
+  private async tryAutoMergeConflict(
+    path: string,
+    remotePlainData: ArrayBuffer
+  ): Promise<{ mergedText: string; hasConflictMarkers: boolean } | null> {
     if (!isTextFilePath(path) || !this.lastSyncedHashStore) return null;
 
     try {
@@ -734,9 +749,11 @@ export class SyncClient {
       const localText = decoder.decode(localData);
       const remoteText = decoder.decode(remotePlainData);
 
-      const patch = createPatch(path, baseText, localText);
-      const merged = applyPatch(remoteText, patch);
-      return merged === false ? null : merged;
+      const { conflict, result } = mergeDiff3(localText, baseText, remoteText, {
+        stringSeparator: "\n",
+        label: { a: "local", b: "remote" },
+      });
+      return { mergedText: result.join("\n"), hasConflictMarkers: conflict };
     } catch (e: unknown) {
       console.error(`Merge attempt failed for ${path}, falling back to conflict backup:`, e);
       return null;
@@ -830,9 +847,12 @@ export class SyncClient {
               let needsBackupAndOverwrite = this.settings.conflictResolution === "manual";
 
               if (this.settings.conflictResolution === "merge") {
-                const mergedText = await this.tryAutoMergeConflict(currentPath, plainData);
-                if (mergedText !== null) {
-                  const mergedData = new TextEncoder().encode(mergedText).buffer;
+                const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
+                if (mergeAttempt === null) {
+                  needsBackupAndOverwrite = true;
+                } else if (!mergeAttempt.hasConflictMarkers) {
+                  // Clean merge -- local's and remote's edits didn't touch the same lines.
+                  const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
                   // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
                   // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
                   // the merged result through the ordinary upload path on the next pass -- no
@@ -847,18 +867,31 @@ export class SyncClient {
                   }
                   handledByMerge = true;
                 } else {
-                  needsBackupAndOverwrite = true;
+                  // Some region really was edited on both sides -- everything else already merged
+                  // automatically; only that region is left, marked inline (git-style) for the user
+                  // to resolve by hand. Back up the pre-merge local content first, same safety net
+                  // as "manual", then write the merged-with-markers file itself via writeSelfPath so
+                  // it doesn't immediately re-upload with unresolved markers still in it -- the
+                  // user's own next edit (removing the markers) is what should trigger the next sync.
+                  try {
+                    await this.backupLocalVersion(currentPath);
+                  } catch (backupErr) {
+                    console.error(`Failed to create pre-merge backup for ${currentPath}:`, backupErr);
+                  }
+                  const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
+                  await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, mergedData));
+                  new Notice(t("plugins.sync.msg-merge-conflict-markers", "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save", { filename: pathUtil.basename(currentPath) }));
+                  const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+                  if (this.hashCache && mergedFile instanceof TFile) {
+                    this.hashCache.set(mergedFile, await sha256(mergedData));
+                  }
+                  handledByMerge = true;
                 }
               }
 
               if (needsBackupAndOverwrite) {
                 try {
-                  const oldData = await readBinaryByPath(this.vault, currentPath);
-                  const ext = pathUtil.extname(currentPath);
-                  const baseName = currentPath.substring(0, currentPath.length - ext.length);
-                  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-                  const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
-                  await writeBinaryByPath(this.vault, conflictPath, oldData);
+                  const conflictPath = await this.backupLocalVersion(currentPath);
                   new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
                 } catch (backupErr) {
                   console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);

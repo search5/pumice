@@ -120,7 +120,7 @@ protoc \
   --plugin=protoc-gen-js=./node_modules/.bin/protoc-gen-js \
   --js_out=import_style=commonjs,binary:./src/generated \
   --plugin=protoc-gen-grpc-web=./bin/protoc-gen-grpc-web \
-  --grpc-web_out=import_style=typescript,mode=grpcwebtext:./src/generated \
+  --grpc-web_out=import_style=typescript,mode=grpcweb:./src/generated \
   --proto_path=. \
   sync.proto
 ```
