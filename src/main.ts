@@ -7,6 +7,7 @@ import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
 import { ContentHashCache } from "./contentHashCache";
+import { LastSyncedHashStore } from "./lastSyncedHashStore";
 import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
@@ -64,6 +65,7 @@ export default class SyncPlugin extends Plugin {
   deletedFiles: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
+  lastSyncedHashStore!: LastSyncedHashStore;
   syncDiagnosticsLog!: SyncDiagnosticsLog;
   settingTab!: SyncSettingTab;
   // Explicit `number`, not ReturnType<typeof window.setInterval/setTimeout>: with @types/node
@@ -133,6 +135,11 @@ export default class SyncPlugin extends Plugin {
     // scan (see contentHashCache.ts) — important once a vault has more than a few hundred files.
     this.contentHashCache = new ContentHashCache();
     await this.contentHashCache.init();
+
+    // Tracks the last content hash both this device and the server agreed on per path -- the
+    // "base" version the "merge" conflictResolution mode diffs local/remote changes against.
+    this.lastSyncedHashStore = new LastSyncedHashStore();
+    await this.lastSyncedHashStore.init();
 
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
@@ -383,7 +390,8 @@ export default class SyncPlugin extends Plugin {
       undefined,
       undefined,
       this.selfWritePaths,
-      (level, message) => this.syncDiagnosticsLog.log(level, message)
+      (level, message) => this.syncDiagnosticsLog.log(level, message),
+      this.lastSyncedHashStore
     );
   }
 
@@ -397,6 +405,7 @@ export default class SyncPlugin extends Plugin {
     this.ribbonReplaceTimers = [];
     this.snapshotStore?.close();
     this.contentHashCache?.close();
+    this.lastSyncedHashStore?.close();
   }
 
   async loadSettings(): Promise<void> {
@@ -508,7 +517,8 @@ export default class SyncPlugin extends Plugin {
             progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
           },
           this.selfWritePaths,
-          (level, message) => this.syncDiagnosticsLog.log(level, message)
+          (level, message) => this.syncDiagnosticsLog.log(level, message),
+          this.lastSyncedHashStore
         );
 
         const result = await client.sync();

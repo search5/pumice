@@ -5,6 +5,7 @@ import { renderDiff } from "./diffView";
 import { enableSwipeNavigation } from "./swipeNavigation";
 import { hasLocalSnapshots, LocalSnapshotModal } from "./fileRecoveryModal";
 import { errorMessage } from "./errorMessage";
+import { MARKDOWN_EXTENSIONS, PLAINTEXT_EXTENSIONS } from "./textFileTypes";
 
 interface HistoryVersion {
   history_id: number;
@@ -26,8 +27,6 @@ const DIFF_TOGGLE_STORAGE_KEY = "history-show-diff";
 // group) and land within 1 hour of it.
 const GROUP_TIME_WINDOW_MS = 36e5;
 
-const MARKDOWN_EXTENSIONS = ["md"];
-const PLAINTEXT_EXTENSIONS = ["json", "css", "js", "base", "canvas"];
 const IMAGE_EXTENSIONS = ["bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"];
 
 function dirnameOf(path: string): string {

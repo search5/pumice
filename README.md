@@ -144,7 +144,7 @@ protoc \
 | autoSync | false | Enable automatic sync |
 | syncIntervalSeconds | 60 | Auto-sync interval (seconds) |
 | syncOnStartup | false | Sync on startup |
-| conflictResolution | manual | Conflict resolution strategy (`manual` / `server-wins` / `client-wins`) |
+| conflictResolution | manual | Conflict resolution strategy (`manual` / `server-wins` / `client-wins` / `merge`) |
 | enableE2EE | false | Enable end-to-end encryption |
 | publishIncludeFolders / publishExcludeFolders | - | Folders to include/exclude when publishing |
 | localSnapshotIntervalMinutes | 5 | Local snapshot interval (minutes) |

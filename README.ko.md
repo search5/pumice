@@ -140,7 +140,7 @@ protoc \
 | autoSync | false | 자동 동기화 활성화 |
 | syncIntervalSeconds | 60 | 자동 동기화 주기(초) |
 | syncOnStartup | false | 시작 시 동기화 |
-| conflictResolution | manual | 충돌 해결 전략(`manual` / `server-wins` / `client-wins`) |
+| conflictResolution | manual | 충돌 해결 전략(`manual` / `server-wins` / `client-wins` / `merge`) |
 | enableE2EE | false | 종단간 암호화 활성화 |
 | publishIncludeFolders / publishExcludeFolders | - | 게재 시 포함/제외할 폴더 |
 | localSnapshotIntervalMinutes | 5 | 로컬 스냅샷 간격(분) |
