@@ -1,6 +1,6 @@
 {
   "name": "pumice",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
   "main": "main.js",
   "author": "Ji-ho Lee <search5@gmail.com>",
@@ -23,7 +23,8 @@
     "@improbable-eng/grpc-web": "^0.15.0",
     "diff": "^9.0.0",
     "google-protobuf": "^3.21.2",
-    "grpc-web": "^2.0.2"
+    "grpc-web": "^2.0.2",
+    "node-diff3": "^3.2.1"
   },
   "devDependencies": {
     "@types/google-protobuf": "^3.15.12",

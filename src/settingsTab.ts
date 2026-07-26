@@ -172,7 +172,7 @@ export class SyncSettingTab extends PluginSettingTab {
                 manual: t("settings.option-conflict-manual", "Manual (choose yourself)"),
                 "server-wins": t("settings.option-conflict-server-wins", "Server wins"),
                 "client-wins": t("settings.option-conflict-client-wins", "Client wins"),
-                merge: t("settings.option-conflict-merge", "Auto-merge (back up only on real conflicts)"),
+                merge: t("settings.option-conflict-merge", "Auto-merge (mark real conflicts inline)"),
               } satisfies Record<ConflictResolution, string>,
             },
           },
@@ -534,7 +534,7 @@ export class SyncSettingTab extends PluginSettingTab {
             manual: t("settings.option-conflict-manual", "Manual (choose yourself)"),
             "server-wins": t("settings.option-conflict-server-wins", "Server wins"),
             "client-wins": t("settings.option-conflict-client-wins", "Client wins"),
-            merge: t("settings.option-conflict-merge", "Auto-merge (back up only on real conflicts)"),
+            merge: t("settings.option-conflict-merge", "Auto-merge (mark real conflicts inline)"),
           } satisfies Record<ConflictResolution, string>)
           .setValue(this.plugin.settings.conflictResolution)
           .onChange(async (value) => {

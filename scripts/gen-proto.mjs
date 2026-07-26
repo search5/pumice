@@ -20,7 +20,12 @@ const args = [
   `--plugin=protoc-gen-js=${protocGenJs}`,
   "--js_out=import_style=commonjs,binary:./src/generated",
   `--plugin=protoc-gen-grpc-web=${protocGenGrpcWeb}`,
-  "--grpc-web_out=import_style=typescript,mode=grpcwebtext:./src/generated",
+  // mode=grpcweb (binary), not grpcwebtext: the latter base64-encodes every request/response
+  // body, inflating every byte transferred by ~33% plus encode/decode CPU cost, on every RPC
+  // (Delta's full local-file-metadata list, every download, the batched-upload fallback) --
+  // pumice-server's grpc_web_resource.py already negotiates text vs. binary per-request from the
+  // Content-Type header, so this needs no server-side change.
+  "--grpc-web_out=import_style=typescript,mode=grpcweb:./src/generated",
   "--proto_path=.",
   "sync.proto",
 ];

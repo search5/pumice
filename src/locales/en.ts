@@ -100,6 +100,7 @@ export const en: Record<string, string> = {
   "plugins.sync.msg-already-latest-version": "This version is already the latest.",
   "plugins.sync.msg-conflict-backup-created": "Conflict backup created: {{filename}}",
   "plugins.sync.msg-auto-merged": "Auto-merged {{filename}} — both changes kept",
+  "plugins.sync.msg-merge-conflict-markers": "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save",
   "plugins.sync.msg-copy-failed": "Copy failed: {{error}}",
   "plugins.sync.msg-restore-failed": "Failed to restore version: {{error}}",
   "plugins.sync.label-vault-sync-ribbon": "Vault Sync",
@@ -176,7 +177,7 @@ export const en: Record<string, string> = {
   "settings.option-conflict-manual": "Manual (choose yourself)",
   "settings.option-conflict-server-wins": "Server wins",
   "settings.option-conflict-client-wins": "Client wins",
-  "settings.option-conflict-merge": "Auto-merge (back up only on real conflicts)",
+  "settings.option-conflict-merge": "Auto-merge (mark real conflicts inline)",
 
   "settings.option-e2ee": "End-to-end encryption (E2EE)",
   "settings.option-e2ee-desc": "Encrypts files with a symmetric key (AES-256-GCM) on your local device before sending them to the server.",
