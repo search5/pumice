@@ -133,7 +133,7 @@ protoc \
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| serverHost | localhost | gRPC server address |
+| serverHost | localhost | Pumice server address |
 | serverPort | 8080 | HTTP + gRPC-Web port |
 | useTls | false | Use TLS (recommended for remote servers) |
 | deviceName | Obsidian Client | Name identifying this device |

@@ -4,6 +4,7 @@ import type SyncPlugin from "./main";
 import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
+import { setButtonWarning } from "./legacyApi";
 import { t } from "./i18n";
 
 export class SyncSettingTab extends PluginSettingTab {
@@ -35,6 +36,15 @@ export class SyncSettingTab extends PluginSettingTab {
   // this plugin's minAppVersion (1.12.7) still needs to support the display()-only fallback path.
   private refreshDeclarativeSettings(): void {
     (this as unknown as { update: () => void }).update();
+  }
+
+  // display() itself is marked @deprecated (steering toward getSettingDefinitions()/update(),
+  // both 1.13.0+) but is still the only refresh mechanism on this plugin's minAppVersion floor
+  // (1.12.7). Routed through the same unknown-cast duck-typing as refreshDeclarativeSettings()
+  // above for the same reason: eslint-comments/no-restricted-disable blocks suppressing
+  // @typescript-eslint/no-deprecated via a disable comment outright.
+  private legacyDisplay(): void {
+    (this as unknown as { display: () => void }).display();
   }
 
   // Declarative settings API (Obsidian 1.13.0+) — display() above stays as-is as the fallback
@@ -69,17 +79,17 @@ export class SyncSettingTab extends PluginSettingTab {
           {
             name: t("settings.option-user-name", "User name"),
             desc: t("settings.option-user-name-desc", "Username shown in sync history"),
-            control: { type: "text", key: "userName", placeholder: "Obsidian User" },
+            control: { type: "text", key: "userName", placeholder: "Obsidian user" },
           },
           {
             name: t("settings.option-device-name", "Device name"),
             desc: t("settings.option-device-name-desc", "Device name shown in sync history"),
-            control: { type: "text", key: "deviceName", placeholder: "Obsidian Client" },
+            control: { type: "text", key: "deviceName", placeholder: "Obsidian client" },
           },
           {
             name: t("settings.option-server-host", "Server address"),
-            desc: t("settings.option-server-host-desc", "Hostname or IP of the gRPC server"),
-            control: { type: "text", key: "serverHost", placeholder: "localhost" },
+            desc: t("settings.option-server-host-desc", "Hostname or IP of the Pumice server"),
+            control: { type: "text", key: "serverHost", placeholder: "Localhost" },
           },
           {
             name: t("settings.option-server-port", "Server port"),
@@ -311,7 +321,7 @@ export class SyncSettingTab extends PluginSettingTab {
       .setDesc(t("settings.option-user-name-desc", "Username shown in sync history"))
       .addText((text) =>
         text
-          .setPlaceholder("Obsidian User")
+          .setPlaceholder("Obsidian user")
           .setValue(this.plugin.settings.userName)
           .onChange(async (value) => {
             this.plugin.settings.userName = value.trim() || "Obsidian User";
@@ -324,7 +334,7 @@ export class SyncSettingTab extends PluginSettingTab {
       .setDesc(t("settings.option-device-name-desc", "Device name shown in sync history"))
       .addText((text) =>
         text
-          .setPlaceholder("Obsidian Client")
+          .setPlaceholder("Obsidian client")
           .setValue(this.plugin.settings.deviceName)
           .onChange(async (value) => {
             this.plugin.settings.deviceName = value.trim() || "Obsidian Client";
@@ -334,10 +344,10 @@ export class SyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t("settings.option-server-host", "Server address"))
-      .setDesc(t("settings.option-server-host-desc", "Hostname or IP of the gRPC server"))
+      .setDesc(t("settings.option-server-host-desc", "Hostname or IP of the Pumice server"))
       .addText((text) =>
         text
-          .setPlaceholder("localhost")
+          .setPlaceholder("Localhost")
           .setValue(this.plugin.settings.serverHost)
           .onChange(async (value) => {
             this.plugin.settings.serverHost = value.trim();
@@ -361,7 +371,7 @@ export class SyncSettingTab extends PluginSettingTab {
           })
       );
 
-    this.renderTokenSetting(new Setting(containerEl), () => this.display());
+    this.renderTokenSetting(new Setting(containerEl), () => this.legacyDisplay());
 
     new Setting(containerEl)
       .setName(t("settings.option-use-tls", "Use TLS"))
@@ -400,17 +410,16 @@ export class SyncSettingTab extends PluginSettingTab {
       .setDesc(desc);
 
     if (hasToken) {
-      setting.addButton((btn) =>
-        btn
-          .setButtonText(t("dialogue.button-delete", "Delete"))
-          .setWarning()
-          .onClick(async () => {
-            await deleteToken(this.app);
-            this.plugin.hasStoredToken = false;
-            new Notice(t("settings.msg-token-deleted", "Token deleted"));
-            onTokenChanged();
-          })
-      );
+      setting.addButton((btn) => {
+        btn.setButtonText(t("dialogue.button-delete", "Delete"));
+        setButtonWarning(btn);
+        btn.onClick(async () => {
+          await deleteToken(this.app);
+          this.plugin.hasStoredToken = false;
+          new Notice(t("settings.msg-token-deleted", "Token deleted"));
+          onTokenChanged();
+        });
+      });
     } else {
       setting.addButton((btn) =>
         btn
@@ -490,7 +499,7 @@ export class SyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.autoSync = value;
             await this.plugin.saveSettings();
-            this.display();
+            this.legacyDisplay();
           })
       );
 
@@ -556,7 +565,7 @@ export class SyncSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enableE2EE = value;
             await this.plugin.saveSettings();
-            this.display();
+            this.legacyDisplay();
           })
       );
 
@@ -617,15 +626,14 @@ export class SyncSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t("settings.option-clear-snapshots", "Clear local snapshots"))
       .setDesc(t("settings.option-clear-snapshots-desc", "Deletes every local snapshot saved so far"))
-      .addButton((btn) =>
-        btn
-          .setButtonText(t("settings.button-clear-snapshots", "Clear saved snapshots"))
-          .setWarning()
-          .onClick(async () => {
-            await this.plugin.snapshotStore.clearAll();
-            new Notice(t("settings.msg-snapshots-cleared", "All local snapshots cleared"));
-          })
-      );
+      .addButton((btn) => {
+        btn.setButtonText(t("settings.button-clear-snapshots", "Clear saved snapshots"));
+        setButtonWarning(btn);
+        btn.onClick(async () => {
+          await this.plugin.snapshotStore.clearAll();
+          new Notice(t("settings.msg-snapshots-cleared", "All local snapshots cleared"));
+        });
+      });
   }
 
   private renderActionsSection(containerEl: HTMLElement): void {

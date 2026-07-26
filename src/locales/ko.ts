@@ -130,7 +130,7 @@ export const ko: Record<string, string> = {
   "settings.option-device-name": "기기 이름",
   "settings.option-device-name-desc": "동기화 이력에 표시될 기기명",
   "settings.option-server-host": "서버 주소",
-  "settings.option-server-host-desc": "gRPC 서버의 호스트명 또는 IP",
+  "settings.option-server-host-desc": "Pumice 서버의 호스트명 또는 IP",
   "settings.option-server-port": "서버 포트",
   "settings.option-server-port-desc": "동기화 및 HTTP 통합 서버 포트 (기본값: 8080)",
   "settings.option-use-tls": "TLS 사용",
