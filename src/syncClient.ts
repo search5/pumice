@@ -9,6 +9,8 @@ import { isTextFilePath } from "./textFileTypes";
 import { mapWithConcurrency, streamWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
+import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPaths } from "./pluginSync";
+import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -90,6 +92,27 @@ async function ensureFolder(vault: Vault, dirPath: string): Promise<void> {
     await vault.createFolder(dirPath);
   } catch {
     /* Ignore if it already exists (e.g. created concurrently) */
+  }
+}
+
+// vault.createFolder() (used by ensureFolder above) is the Vault API, which has never been
+// exercised against nested config-dir paths like .obsidian/plugins/<id>/ -- bookmarks.json never
+// needed folder creation since its parent (.obsidian) always already exists. This walks the
+// Adapter API instead (vault.adapter.mkdir, 1.7.2+), level by level with an exists() check before
+// each mkdir, so it's correct regardless of whether a given platform's mkdir() creates
+// intermediate directories or only the immediate one.
+async function ensureConfigFolder(vault: Vault, dirPath: string): Promise<void> {
+  if (!dirPath) return;
+  const parts = dirPath.split("/").filter((p) => p.length > 0);
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (await vault.adapter.exists(current)) continue;
+    try {
+      await vault.adapter.mkdir(current);
+    } catch {
+      /* Ignore if it already exists (e.g. created concurrently) */
+    }
   }
 }
 
@@ -280,6 +303,12 @@ export class SyncClient {
   // a different file is never suppressed.
   private selfWritePaths: Set<string>;
   private onLog?: SyncLogCallback;
+  // Raw (unfiltered by ignorePatterns) .obsidian/plugins/** paths seen on the last successful
+  // sync -- diffed against the current listing each scan to synthesize deletion tombstones for
+  // plugin removals, since vault.on("delete", ...) never fires for config-dir paths. See
+  // #7_플러그인_동기화_구현_계획.md.
+  private lastKnownPluginPaths: Record<string, number>;
+  private updateLastKnownPluginPaths?: (paths: Record<string, number>) => Promise<void>;
 
   private async getE2eeKey(): Promise<CryptoKey> {
     if (this.e2eeKeyCache) {
@@ -400,7 +429,9 @@ export class SyncClient {
     onRetry?: SyncRetryCallback,
     selfWritePaths?: Set<string>,
     onLog?: SyncLogCallback,
-    lastSyncedHashStore?: LastSyncedHashStore
+    lastSyncedHashStore?: LastSyncedHashStore,
+    lastKnownPluginPaths?: Record<string, number>,
+    updateLastKnownPluginPaths?: (paths: Record<string, number>) => Promise<void>
   ) {
     this.vault = vault;
     this.fileManager = fileManager;
@@ -415,6 +446,8 @@ export class SyncClient {
     this.selfWritePaths = selfWritePaths ?? new Set<string>();
     this.onLog = onLog;
     this.lastSyncedHashStore = lastSyncedHashStore;
+    this.lastKnownPluginPaths = lastKnownPluginPaths ?? {};
+    this.updateLastKnownPluginPaths = updateLastKnownPluginPaths;
 
     const protocol = settings.useTls ? "https" : "http";
     const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
@@ -435,6 +468,19 @@ export class SyncClient {
   private async calculateHash(file: TFile): Promise<string> {
     const arrayBuffer = await this.vault.readBinary(file);
     return sha256(arrayBuffer);
+  }
+
+  // Routes to ensureConfigFolder (Adapter-based, see its comment) for paths under the vault's
+  // config dir -- e.g. a newly-downloaded .obsidian/plugins/<id>/main.js whose folder doesn't
+  // exist locally yet -- and to the regular Vault-API-based ensureFolder for everything else.
+  private async ensureFolderForPath(filePath: string): Promise<void> {
+    const dir = pathUtil.dirname(filePath);
+    const configDir = this.vault.configDir;
+    if (dir === configDir || dir.startsWith(`${configDir}/`)) {
+      await ensureConfigFolder(this.vault, dir);
+    } else {
+      await ensureFolder(this.vault, dir);
+    }
   }
 
   // Marks `path` as a self-write for the duration of `action` -- vault.on() fires synchronously as
@@ -824,11 +870,16 @@ export class SyncClient {
             const currentPath = eofPath;
             const currentMtime = buf.mtime;
 
-            const dir = pathUtil.dirname(currentPath);
-            await ensureFolder(this.vault, dir);
+            await this.ensureFolderForPath(currentPath);
+
+            // bookmarks.json always merges, regardless of the configured conflictResolution --
+            // see #9_북마크_강제병합_및_기본값_개선_구현_계획.md.
+            const effectiveConflictResolution = resolveEffectiveConflictResolution(
+              currentPath, this.vault.configDir, this.settings.conflictResolution
+            );
 
             const exists = await existsByPath(this.vault, currentPath);
-            if (exists && this.settings.conflictResolution === "client-wins") {
+            if (exists && effectiveConflictResolution === "client-wins") {
               return;
             }
 
@@ -849,9 +900,9 @@ export class SyncClient {
             let handledByMerge = false;
 
             if (exists) {
-              let needsBackupAndOverwrite = this.settings.conflictResolution === "manual";
+              let needsBackupAndOverwrite = effectiveConflictResolution === "manual";
 
-              if (this.settings.conflictResolution === "merge") {
+              if (effectiveConflictResolution === "merge") {
                 const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
                 if (mergeAttempt === null) {
                   needsBackupAndOverwrite = true;
@@ -968,6 +1019,15 @@ export class SyncClient {
     const keyFingerprint =
       this.settings.enableE2EE && this.settings.e2eePassword ? await this.getKeyFingerprint() : "";
 
+    // Prefetches every path's cache entry in one IndexedDB transaction instead of letting each of
+    // the getWireHash()/getHash() calls below open its own -- see #8_ContentHashCache_배치읽기_구현_계획.md.
+    // Opening filesToScan.length separate transactions just to check for a cache hit is what made
+    // the "scan X/Y" progress phase slow on vaults with many files, even when almost everything was
+    // an unchanged-file cache hit.
+    const prefetchedHashes = this.hashCache
+      ? await this.hashCache.getMany(filesToScan.map((f) => f.path))
+      : undefined;
+
     // Reused by the upload-prep step below so a file read (and, under E2EE, encrypted) during this
     // scan isn't read/encrypted a second time if it turns out to need uploading -- the common case
     // on the very first sync, when every file is new and nothing in ContentHashCache can help yet.
@@ -996,7 +1056,7 @@ export class SyncClient {
             const encMeta = await this.getFileMetadataFromBuffer(arrayBuffer);
             maybeCacheWireBuffer(file.path, encMeta.buffer, encMeta.hash, file.stat.mtime);
             return { plainHash: await sha256(arrayBuffer), wireHash: encMeta.hash, wireSize: encMeta.size };
-          });
+          }, prefetchedHashes);
           hash = meta.wireHash;
           size = meta.wireSize;
           plainHashForCache = meta.plainHash;
@@ -1018,7 +1078,7 @@ export class SyncClient {
           const computedHash = await sha256(arrayBuffer);
           maybeCacheWireBuffer(file.path, arrayBuffer, computedHash, file.stat.mtime);
           return computedHash;
-        });
+        }, prefetchedHashes);
         size = file.stat.size;
         plainHashForCache = hash;
       } else {
@@ -1083,6 +1143,65 @@ export class SyncClient {
         } catch (e: unknown) {
           console.error("Failed to stat or read bookmarks.json:", e);
         }
+      }
+    }
+
+    // Explicitly include installed community plugins in sync — .obsidian/plugins/** is, like
+    // bookmarks.json above, outside the vault index and unreachable via the Vault API, so this
+    // walks it directly through the Adapter. See #7_플러그인_동기화_구현_계획.md.
+    let rawPluginPaths: string[] = [];
+    if (this.settings.syncPlugins) {
+      const pluginsRoot = `${this.vault.configDir}/plugins`;
+
+      // adapter.list() only returns one directory level, so recurse into each subfolder found.
+      const collectFiles = async (dirPath: string): Promise<string[]> => {
+        if (!(await this.vault.adapter.exists(dirPath))) return [];
+        const { files, folders } = await this.vault.adapter.list(dirPath);
+        const nested = await Promise.all(folders.map((f) => collectFiles(f)));
+        return [...files, ...nested.flat()];
+      };
+
+      const communityPluginsPath = `${this.vault.configDir}/community-plugins.json`;
+      const rawPluginFiles = await collectFiles(pluginsRoot);
+      const communityPluginsExists = await this.vault.adapter.exists(communityPluginsPath);
+      // Raw = every path actually on disk, unfiltered by ignorePatterns -- this is what the
+      // deletion diff below compares against, deliberately kept separate from the
+      // filterSyncablePluginPaths() output used for the actual content scan (see
+      // detectRemovedPluginPaths()'s own comment for why: an ignorePatterns change must never look
+      // like a deletion).
+      rawPluginPaths = communityPluginsExists ? [...rawPluginFiles, communityPluginsPath] : rawPluginFiles;
+
+      const allPluginFiles = filterSyncablePluginPaths(rawPluginPaths, {
+        isIgnored: (p) => this.isIgnored(p),
+        syncPluginData: this.settings.syncPluginData,
+      });
+
+      await mapWithConcurrency(allPluginFiles, SCAN_CONCURRENCY, async (path) => {
+        try {
+          const stat = await this.vault.adapter.stat(path);
+          if (!stat) return;
+          const arrayBuffer = await this.vault.adapter.readBinary(path);
+          const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer);
+          maybeCacheWireBuffer(path, buffer, hash, stat.mtime);
+          localFilesMeta.push({
+            path,
+            modified_at_ms: stat.mtime,
+            size_bytes: size,
+            content_hash: hash,
+            is_deleted: false,
+          });
+        } catch (e: unknown) {
+          console.error(`Failed to stat or read plugin file ${path}:`, e);
+        }
+      });
+
+      // Detect plugins removed locally since the last sync (no vault "delete" event fires for
+      // config-dir paths, so this is the only way to notice) and fold them into the same
+      // deletedFiles tombstone mechanism regular files already use -- everything downstream
+      // (the tombstone loop right below, and the send/receive handling further down) needs no
+      // changes to pick these up.
+      for (const removedPath of detectRemovedPluginPaths(rawPluginPaths, this.lastKnownPluginPaths, (p) => this.isIgnored(p))) {
+        this.deletedFiles[removedPath] = Date.now();
       }
     }
 
@@ -1251,6 +1370,17 @@ export class SyncClient {
     // 6. Persist the updated deletion-history state
     await this.updateDeletedFiles(this.deletedFiles);
 
+    // Persist this scan's raw plugin-path snapshot for next time's deletion diff -- deferred to
+    // here (after the Delta round-trip and upload/download attempts, not right after the scan)
+    // so a sync that fails partway through doesn't advance the snapshot past files that turn out
+    // to still need a deletion tombstone next time. Only touched when syncPlugins is on: leaving
+    // it untouched while off preserves the last-known state for whenever it's re-enabled, rather
+    // than silently resetting it.
+    if (this.settings.syncPlugins) {
+      this.lastKnownPluginPaths = buildPluginSnapshot(rawPluginPaths, Date.now());
+      await this.updateLastKnownPluginPaths?.(this.lastKnownPluginPaths);
+    }
+
     return {
       uploaded: uploadCount,
       downloaded: downloadCount,
@@ -1412,8 +1542,7 @@ export class SyncClient {
     }
 
     // Write the restored data to the local filesystem
-    const dir = pathUtil.dirname(currentPath);
-    await ensureFolder(this.vault, dir);
+    await this.ensureFolderForPath(currentPath);
 
     // No explicit mtime here: a plain write already sets it to "now", which is what we want.
     await writeBinaryByPath(this.vault, currentPath, arrayBuffer);

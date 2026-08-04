@@ -162,6 +162,12 @@ export const en: Record<string, string> = {
   "settings.option-sync-files-desc": "Syncs files and folders in the vault",
   "settings.option-sync-bookmarks": "Sync bookmarks",
   "settings.option-sync-bookmarks-desc": "Syncs Obsidian bookmarks",
+  "settings.option-sync-plugins": "Sync installed plugins",
+  "settings.option-sync-plugins-desc":
+    "Syncs installed community plugins (code, manifest, and the enabled list). This syncs executable code, not just content -- only enable it if you trust this sync server. Restart Obsidian after syncing to apply plugin changes.",
+  "settings.option-sync-plugin-data": "Include plugin settings (data.json)",
+  "settings.option-sync-plugin-data-desc":
+    "Also syncs each plugin's data.json, which may contain API keys or tokens in plaintext. Consider enabling end-to-end encryption if you turn this on.",
   "settings.option-ignore-patterns": "Ignore patterns",
   "settings.option-ignore-patterns-desc": "Paths to exclude from sync (one per line, glob supported)",
 
@@ -171,6 +177,9 @@ export const en: Record<string, string> = {
   "settings.option-sync-interval-desc": "How often auto sync runs (minimum 10 seconds)",
   "settings.option-sync-on-startup": "Sync on startup",
   "settings.option-sync-on-startup-desc": "Runs sync automatically when Obsidian starts",
+  "settings.option-live-updates": "Live updates",
+  "settings.option-live-updates-desc":
+    "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently.",
 
   "settings.option-conflict-resolution": "Conflict resolution method",
   "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files",
