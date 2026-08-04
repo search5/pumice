@@ -160,6 +160,12 @@ export const ko: Record<string, string> = {
   "settings.option-sync-files-desc": "Vault 내 파일 및 폴더를 동기화합니다",
   "settings.option-sync-bookmarks": "북마크 동기화",
   "settings.option-sync-bookmarks-desc": "Obsidian 북마크를 동기화합니다",
+  "settings.option-sync-plugins": "설치된 플러그인 동기화",
+  "settings.option-sync-plugins-desc":
+    "설치된 커뮤니티 플러그인(코드, 매니페스트, 활성화 목록)을 동기화합니다. 콘텐츠가 아니라 실행 코드가 동기화되므로, 이 동기화 서버를 신뢰하는 경우에만 켜세요. 동기화 후 변경사항을 적용하려면 Obsidian을 재시작해야 합니다.",
+  "settings.option-sync-plugin-data": "플러그인 설정 포함 (data.json)",
+  "settings.option-sync-plugin-data-desc":
+    "각 플러그인의 data.json도 함께 동기화합니다. 평문 API 키/토큰이 들어있을 수 있으니, 이 옵션을 켤 경우 종단간 암호화 사용을 고려하세요.",
   "settings.option-ignore-patterns": "제외 패턴",
   "settings.option-ignore-patterns-desc": "동기화에서 제외할 경로 (줄바꿈으로 구분, glob 지원)",
 
@@ -169,6 +175,9 @@ export const ko: Record<string, string> = {
   "settings.option-sync-interval-desc": "자동 동기화 실행 간격 (최소 10초)",
   "settings.option-sync-on-startup": "시작 시 동기화",
   "settings.option-sync-on-startup-desc": "Obsidian 시작 시 자동으로 동기화를 실행합니다",
+  "settings.option-live-updates": "실시간 업데이트",
+  "settings.option-live-updates-desc":
+    "서버와 연결을 계속 유지해서, 다음 자동 동기화를 기다리지 않고 다른 기기의 변경사항이 몇 초 안에 반영되게 합니다. 이 연결이 조용히 끊길 경우를 대비해 자동 동기화도 함께 켜두는 걸 권장합니다.",
 
   "settings.option-conflict-resolution": "충돌 해결 방식",
   "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법",

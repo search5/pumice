@@ -12,6 +12,7 @@ import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
+import { extractSseFrames, nextBackoffMs } from "./liveUpdates";
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
 // (matching what savePluginData() below actually writes) keeps the `any` from flowing into
@@ -20,6 +21,7 @@ import { errorMessage } from "./errorMessage";
 interface PersistedPluginData {
   settings?: Partial<SyncPluginSettings>;
   deletedFiles?: Record<string, number>;
+  lastKnownPluginPaths?: Record<string, number>;
 }
 
 // The "Vault Sync" ribbon button has no core equivalent, so there's no core translation key for
@@ -63,6 +65,10 @@ export default class SyncPlugin extends Plugin {
   /** E2EE sync password, cached in memory from app.secretStorage -- never persisted to data.json. */
   e2eePassword = "";
   deletedFiles: Record<string, number> = {};
+  // Snapshot of .obsidian/plugins/** paths seen on the last successful sync (raw, unfiltered by
+  // ignorePatterns) -- diffed against the current listing each sync to detect plugin removals,
+  // since vault.on("delete", ...) never fires for config-dir paths. See #7_플러그인_동기화_구현_계획.md.
+  lastKnownPluginPaths: Record<string, number> = {};
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
   lastSyncedHashStore!: LastSyncedHashStore;
@@ -88,6 +94,12 @@ export default class SyncPlugin extends Plugin {
   // and runs once the current one finishes.
   private isSyncing = false;
   private syncQueuedWhileRunning = false;
+  // Set once in onunload() so an in-flight runLiveUpdateLoop() notices (between reads/retries)
+  // and stops re-looping, instead of holding the plugin process open forever.
+  private unloading = false;
+  // Guards against starting a second concurrent loop (e.g. the setting gets toggled on twice in
+  // a row) -- see startLiveUpdatesIfNeeded().
+  private liveUpdatesLoopRunning = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -115,11 +127,8 @@ export default class SyncPlugin extends Plugin {
       // The settings tab may already be open (that's usually how the user got to the "Log in"
       // button in the first place) and won't otherwise know the token changed underneath it --
       // refresh it so it reflects the new state instead of still showing the login prompt.
-      // update() (1.13.0+) rebuilds the declarative definitions; below that, Obsidian never calls
-      // getSettingDefinitions() at all, so display() (the legacy full re-render) is what's live.
-      const settingTab = this.settingTab as unknown as { update?: () => void; display: () => void };
-      if (typeof settingTab.update === "function") settingTab.update();
-      else settingTab.display();
+      // update() rebuilds the declarative definitions returned by getSettingDefinitions().
+      this.settingTab.update();
     });
 
     // Local snapshots: instead of reading core File Recovery's undocumented IndexedDB schema, we keep
@@ -296,6 +305,8 @@ export default class SyncPlugin extends Plugin {
       this.startAutoSync();
     }
 
+    this.startLiveUpdatesIfNeeded();
+
     // Folder context menu — toggles publish "included folder" status. Core Publish itself has no
     // folder right-click menu at all (reverse-engineered from obsidian.asar: the file-menu handler
     // is gated to TFile instances only, and there's no files-menu registration either) — we reuse
@@ -391,11 +402,17 @@ export default class SyncPlugin extends Plugin {
       undefined,
       this.selfWritePaths,
       (level, message) => this.syncDiagnosticsLog.log(level, message),
-      this.lastSyncedHashStore
+      this.lastSyncedHashStore,
+      this.lastKnownPluginPaths,
+      async (paths) => {
+        this.lastKnownPluginPaths = paths;
+        await this.savePluginData();
+      }
     );
   }
 
   onunload(): void {
+    this.unloading = true;
     this.stopAutoSync();
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
@@ -412,6 +429,7 @@ export default class SyncPlugin extends Plugin {
     const data = ((await this.loadData()) as PersistedPluginData | null) || {};
     this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
     this.deletedFiles = data.deletedFiles || {};
+    this.lastKnownPluginPaths = data.lastKnownPluginPaths || {};
 
     // One-time migration: e2eePassword used to be persisted in plaintext here. Move any leftover
     // value into secretStorage (same treatment as the auth token in tokenStore.ts) and never write
@@ -430,12 +448,18 @@ export default class SyncPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     await this.savePluginData();
     this.restartAutoSync();
+    // No "stop" call needed here the way autoSync has one: runLiveUpdateLoop() already checks
+    // this.settings.liveUpdates on every iteration and exits by itself once it's turned off.
+    // This only covers turning it *on* while the plugin is already running (there's no timer to
+    // arm the way autoSync has -- startLiveUpdatesIfNeeded() is a no-op if a loop is already up).
+    this.startLiveUpdatesIfNeeded();
   }
 
   async savePluginData(): Promise<void> {
     await this.saveData({
       settings: this.settings,
       deletedFiles: this.deletedFiles,
+      lastKnownPluginPaths: this.lastKnownPluginPaths,
     });
   }
 
@@ -518,7 +542,12 @@ export default class SyncPlugin extends Plugin {
           },
           this.selfWritePaths,
           (level, message) => this.syncDiagnosticsLog.log(level, message),
-          this.lastSyncedHashStore
+          this.lastSyncedHashStore,
+          this.lastKnownPluginPaths,
+          async (paths) => {
+            this.lastKnownPluginPaths = paths;
+            await this.savePluginData();
+          }
         );
 
         const result = await client.sync();
@@ -568,6 +597,73 @@ export default class SyncPlugin extends Plugin {
     this.stopAutoSync();
     if (this.settings.autoSync) {
       this.startAutoSync();
+    }
+  }
+
+  private startLiveUpdatesIfNeeded(): void {
+    if (this.liveUpdatesLoopRunning || !this.settings.liveUpdates) return;
+    this.liveUpdatesLoopRunning = true;
+    void this.runLiveUpdateLoop().finally(() => {
+      this.liveUpdatesLoopRunning = false;
+    });
+  }
+
+  // Opens GET /watch (a plain SSE connection, not gRPC-Web -- see #10_실시간_변경_알림_구현_계획.md)
+  // and triggers syncNow() whenever the server reports a change, instead of waiting for the next
+  // autoSync tick. Reconnects with exponential backoff on any error; exits cleanly once
+  // liveUpdates is turned off or the plugin unloads (checked at both loop levels, since a single
+  // connection can live for a long time between read() calls).
+  private async runLiveUpdateLoop(): Promise<void> {
+    const INITIAL_BACKOFF_MS = 1000;
+    const MAX_BACKOFF_MS = 60000;
+    let backoffMs = INITIAL_BACKOFF_MS;
+
+    while (this.settings.liveUpdates && !this.unloading) {
+      try {
+        const token = await this.getToken();
+        if (!token) {
+          await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+          backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
+          continue;
+        }
+
+        const client = await this.getSyncClient();
+        const vaultId = encodeURIComponent(this.app.vault.getName());
+        // requestUrl() can't do this: its response has no ReadableStream/incremental-read option,
+        // it hands back the complete body only once the whole response has arrived -- fundamentally
+        // incompatible with reading an SSE stream as it comes in. Raw fetch() is the only API that
+        // supports it (same reasoning as syncClient.ts's uploadFilesStreaming()). Routed through
+        // window (unknown-cast) rather than the bare global for the same reason as there: an
+        // eslint-comments/no-restricted-disable block forbids suppressing this rule via a disable
+        // comment outright, so this is what actually keeps the warning from firing.
+        const windowFetch = (window as unknown as { fetch: typeof fetch }).fetch;
+        const response = await windowFetch(`${client.getPublishHost()}/watch?vault_id=${vaultId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`/watch request failed: ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (this.settings.liveUpdates && !this.unloading) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const extracted = extractSseFrames(buffer);
+          buffer = extracted.remainder;
+          if (extracted.changed) void this.syncNow();
+        }
+
+        // The stream ended (server closed it, or we broke out above) rather than erroring --
+        // reconnect immediately at the base backoff instead of treating it like a failure.
+        backoffMs = INITIAL_BACKOFF_MS;
+      } catch (e: unknown) {
+        this.logDebug(`Live update connection error, retrying in ${backoffMs}ms: ${errorMessage(e)}`);
+        await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+        backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
+      }
     }
   }
 
