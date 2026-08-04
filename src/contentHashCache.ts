@@ -63,9 +63,19 @@ export class ContentHashCache {
     }
   }
 
-  /** Returns file's content hash, reusing the cached value when its mtime+size haven't changed. */
-  async getHash(file: TFile, compute: () => Promise<string>): Promise<string> {
-    const cached = await this.get(file.path);
+  /**
+   * Returns file's content hash, reusing the cached value when its mtime+size haven't changed.
+   * When `prefetched` is passed (see getMany()), the lookup is a plain Map#get() instead of a
+   * fresh IndexedDB transaction -- the caller is expected to have prefetched every path it's
+   * about to ask for in one batch. Omitting it preserves the original per-call behavior for
+   * callers (e.g. Publish's diff scan) that haven't been updated to prefetch.
+   */
+  async getHash(
+    file: TFile,
+    compute: () => Promise<string>,
+    prefetched?: Map<string, CachedHash>
+  ): Promise<string> {
+    const cached = prefetched ? prefetched.get(file.path) : await this.get(file.path);
     if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) {
       return cached.hash;
     }
@@ -84,9 +94,10 @@ export class ContentHashCache {
   async getWireHash(
     file: TFile,
     keyFingerprint: string,
-    compute: () => Promise<{ plainHash: string; wireHash: string; wireSize: number }>
+    compute: () => Promise<{ plainHash: string; wireHash: string; wireSize: number }>,
+    prefetched?: Map<string, CachedHash>
   ): Promise<{ plainHash: string; wireHash: string; wireSize: number }> {
-    const cached = await this.get(file.path);
+    const cached = prefetched ? prefetched.get(file.path) : await this.get(file.path);
     if (
       cached &&
       cached.mtime === file.stat.mtime &&
@@ -116,6 +127,39 @@ export class ContentHashCache {
    */
   set(file: TFile, hash: string): void {
     this.put(file.path, { mtime: file.stat.mtime, size: file.stat.size, hash });
+  }
+
+  /**
+   * Batched form of get() — the read-side counterpart of setMany() below, for the same reason:
+   * regular sync looks this cache up for every local file on every scan pass (to decide whether a
+   * read+hash can be skipped), and opening a separate IndexedDB transaction per file just to check
+   * for a cache hit dominates the scan once there are hundreds/thousands of files. Callers pass the
+   * result to getHash()/getWireHash()'s `prefetched` parameter instead of letting them each open
+   * their own transaction. Paths with no cached entry are simply absent from the returned map
+   * (never mapped to null/undefined), so Map#has()/Map#get() naturally distinguish "no entry" from
+   * "entry present."
+   */
+  async getMany(paths: string[]): Promise<Map<string, CachedHash>> {
+    const result = new Map<string, CachedHash>();
+    if (!this.db || paths.length === 0) return result;
+    return new Promise((resolve) => {
+      try {
+        const store = this.db!.transaction("hashes", "readonly").objectStore("hashes");
+        let remaining = paths.length;
+        for (const path of paths) {
+          const req = store.get(path);
+          req.onsuccess = () => {
+            if (req.result) result.set(path, req.result as CachedHash);
+            if (--remaining === 0) resolve(result);
+          };
+          req.onerror = () => {
+            if (--remaining === 0) resolve(result);
+          };
+        }
+      } catch {
+        resolve(result); // best-effort cache — treat a failed batch as a full cache miss
+      }
+    });
   }
 
   /**
