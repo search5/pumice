@@ -180,6 +180,11 @@ export const en: Record<string, string> = {
   "settings.option-live-updates": "Live updates",
   "settings.option-live-updates-desc":
     "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently.",
+  "settings.status-live-connection": "Connection status",
+  "status.live-disabled": "Live updates off",
+  "status.live-connecting": "Live updates: connecting…",
+  "status.live-connected": "Live updates: connected",
+  "status.live-reconnecting": "Live updates: reconnecting…",
 
   "settings.option-conflict-resolution": "Conflict resolution method",
   "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files",

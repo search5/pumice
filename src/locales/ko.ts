@@ -178,6 +178,11 @@ export const ko: Record<string, string> = {
   "settings.option-live-updates": "실시간 업데이트",
   "settings.option-live-updates-desc":
     "서버와 연결을 계속 유지해서, 다음 자동 동기화를 기다리지 않고 다른 기기의 변경사항이 몇 초 안에 반영되게 합니다. 이 연결이 조용히 끊길 경우를 대비해 자동 동기화도 함께 켜두는 걸 권장합니다.",
+  "settings.status-live-connection": "연결 상태",
+  "status.live-disabled": "실시간 업데이트 꺼짐",
+  "status.live-connecting": "실시간 업데이트: 연결 중…",
+  "status.live-connected": "실시간 업데이트: 연결됨",
+  "status.live-reconnecting": "실시간 업데이트: 재연결 시도 중…",
 
   "settings.option-conflict-resolution": "충돌 해결 방식",
   "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법",
