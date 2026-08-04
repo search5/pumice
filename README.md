@@ -29,10 +29,9 @@ Key features:
 
 - Node.js (with npm)
 - `protoc` (verified with 3.21.12)
-- Obsidian 1.12.7+ (`manifest.json`'s `minAppVersion`). On 1.13.0+ the settings tab renders via
-  the declarative settings API (so it's searchable from Obsidian's own settings search); below
-  that, `settingsTab.ts`'s `display()` renders the same settings the classic imperative way —
-  both are kept in sync by hand, since Obsidian only calls one or the other depending on version.
+- Obsidian 1.13.4+ (`manifest.json`'s `minAppVersion`). The settings tab renders entirely via
+  the declarative settings API (`getSettingDefinitions()`), so it's searchable from Obsidian's
+  own settings search; there's no legacy/imperative fallback UI to keep in sync.
 
 ## Building
 

@@ -52,17 +52,16 @@ same batched gRPC-Web path Pumice has always used, entirely transparently;
 nothing about the UI or the resulting synced state differs between the two
 paths.
 
-Settings tab: two rendering paths, one set of settings
------------------------------------------------------------
+Settings tab: declarative only
+------------------------------------
 
 Obsidian 1.13.0 introduced a declarative settings API
 (``getSettingDefinitions()``) that makes plugin settings appear in
-Obsidian's own settings search. Since Pumice supports back to Obsidian
-1.12.7, its settings tab implements *both*: the declarative API for 1.13.0+,
-and the older imperative ``display()`` method as a fallback for versions
-between 1.12.7 and 1.13.0 — Obsidian itself decides which one actually runs,
-based on the running app's version, so both are kept behaviorally in sync by
-hand in the plugin's source.
+Obsidian's own settings search. Pumice requires Obsidian 1.13.4+, so its
+settings tab implements only that declarative API — there's no older
+imperative ``display()`` fallback to keep in sync by hand; ``settingsTab.ts``
+declares the settings once via ``getSettingDefinitions()`` and Obsidian
+renders them.
 
 Vault identity
 ------------------
@@ -81,7 +80,7 @@ Project structure
    ├── src/
    │   ├── main.ts                    # Plugin entry point
    │   ├── settings.ts                # Settings types and defaults
-   │   ├── settingsTab.ts             # Settings panel UI (dual-path, see above)
+   │   ├── settingsTab.ts             # Settings panel UI (declarative, see above)
    │   ├── syncClient.ts              # gRPC/HTTP client: sync, history, publish
    │   ├── syncHistoryModal.ts        # Version history UI
    │   ├── fileRecoveryModal.ts       # Local snapshot recovery UI
