@@ -1,9 +1,10 @@
-import { App, PluginSettingTab, Setting, ButtonComponent, Notice } from "obsidian";
+import { App, PluginSettingTab, Setting, ButtonComponent, Notice, setIcon } from "obsidian";
 import type { SettingDefinitionItem } from "obsidian";
 import type SyncPlugin from "./main";
 import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
+import { describeLiveStatus } from "./liveStatus";
 import { t } from "./i18n";
 
 export class SyncSettingTab extends PluginSettingTab {
@@ -161,6 +162,22 @@ export class SyncSettingTab extends PluginSettingTab {
               "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently."
             ),
             control: { type: "toggle", key: "liveUpdates" },
+          },
+          {
+            // No control -- a status line, not a setting. This is the primary place to check the
+            // live-updates connection state: unlike the status bar (main.ts's statusBarItemEl),
+            // Obsidian mobile has no status bar visible by default, but the settings tab renders
+            // the same everywhere. Refreshed via settingTab.update() whenever main.ts's
+            // liveConnectionState changes (see setLiveConnectionState()).
+            name: t("settings.status-live-connection", "Connection status"),
+            visible: () => this.plugin.settings.liveUpdates,
+            render: (setting) => {
+              setting.settingEl.empty();
+              const { icon, labelKey, labelFallback } = describeLiveStatus(this.plugin.liveConnectionState);
+              const el = setting.settingEl.createEl("p", { cls: "setting-item-description pumice-live-status" });
+              setIcon(el.createSpan(), icon);
+              el.createSpan({ text: t(labelKey, labelFallback) });
+            },
           },
         ],
       },

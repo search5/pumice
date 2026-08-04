@@ -1,4 +1,4 @@
-import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder } from "obsidian";
+import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
@@ -13,6 +13,7 @@ import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import { extractSseFrames, nextBackoffMs } from "./liveUpdates";
+import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
 // (matching what savePluginData() below actually writes) keeps the `any` from flowing into
@@ -100,6 +101,14 @@ export default class SyncPlugin extends Plugin {
   // Guards against starting a second concurrent loop (e.g. the setting gets toggled on twice in
   // a row) -- see startLiveUpdatesIfNeeded().
   private liveUpdatesLoopRunning = false;
+  // Read by settingsTab.ts (via describeLiveStatus()) to render the connection-status line next
+  // to the "Live updates" toggle -- the settings tab is the only status surface guaranteed to be
+  // visible on mobile, since Obsidian mobile has no status bar by default (see statusBarItemEl).
+  liveConnectionState: LiveConnectionState = "disabled";
+  // Desktop-only in practice: Obsidian mobile ships a status bar element but keeps it hidden
+  // unless the user opts in (Settings > Appearance > "Show status bar"), so this is a bonus for
+  // desktop users rather than the primary indicator -- see liveConnectionState above for that.
+  private statusBarItemEl: HTMLElement | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -305,6 +314,7 @@ export default class SyncPlugin extends Plugin {
       this.startAutoSync();
     }
 
+    this.statusBarItemEl = this.addStatusBarItem();
     this.startLiveUpdatesIfNeeded();
 
     // Folder context menu — toggles publish "included folder" status. Core Publish itself has no
@@ -601,11 +611,35 @@ export default class SyncPlugin extends Plugin {
   }
 
   private startLiveUpdatesIfNeeded(): void {
-    if (this.liveUpdatesLoopRunning || !this.settings.liveUpdates) return;
+    if (this.liveUpdatesLoopRunning || !this.settings.liveUpdates) {
+      if (!this.settings.liveUpdates) this.setLiveConnectionState("disabled");
+      return;
+    }
     this.liveUpdatesLoopRunning = true;
     void this.runLiveUpdateLoop().finally(() => {
       this.liveUpdatesLoopRunning = false;
+      this.setLiveConnectionState("disabled");
     });
+  }
+
+  // Renders liveConnectionState to the status bar (see the field's own comment for why the
+  // settings tab, not this, is the primary indicator) and refreshes the settings tab in case
+  // it's currently open -- update() is Obsidian's own no-op-when-not-displayed rebuild, the same
+  // mechanism the "Log in" flow above already relies on to reflect state changes made elsewhere.
+  private setLiveConnectionState(state: LiveConnectionState): void {
+    this.liveConnectionState = state;
+    this.renderLiveStatusBar();
+    this.settingTab.update();
+  }
+
+  private renderLiveStatusBar(): void {
+    if (!this.statusBarItemEl) return;
+    this.statusBarItemEl.empty();
+    if (!this.settings.liveUpdates) return;
+    const { icon, labelKey, labelFallback } = describeLiveStatus(this.liveConnectionState);
+    this.statusBarItemEl.addClass("pumice-live-status");
+    setIcon(this.statusBarItemEl.createSpan(), icon);
+    this.statusBarItemEl.createSpan({ text: t(labelKey, labelFallback) });
   }
 
   // Opens GET /watch (a plain SSE connection, not gRPC-Web -- see #10_실시간_변경_알림_구현_계획.md)
@@ -620,11 +654,13 @@ export default class SyncPlugin extends Plugin {
 
     while (this.settings.liveUpdates && !this.unloading) {
       try {
+        this.setLiveConnectionState("connecting");
         const token = await this.getToken();
         if (!token) {
-          await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
-          backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
-          continue;
+          // Falls through to the catch block below instead of a silent sleep-and-continue --
+          // that used to leave the status stuck on "connecting" forever with nothing in the
+          // diagnostics log, indistinguishable from a slow-but-working connection attempt.
+          throw new Error(t("settings.msg-no-token", "No sync token is set."));
         }
 
         const client = await this.getSyncClient();
@@ -643,6 +679,7 @@ export default class SyncPlugin extends Plugin {
         if (!response.ok || !response.body) {
           throw new Error(`/watch request failed: ${response.status}`);
         }
+        this.setLiveConnectionState("connected");
 
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -660,6 +697,7 @@ export default class SyncPlugin extends Plugin {
         // reconnect immediately at the base backoff instead of treating it like a failure.
         backoffMs = INITIAL_BACKOFF_MS;
       } catch (e: unknown) {
+        this.setLiveConnectionState("reconnecting");
         this.logDebug(`Live update connection error, retrying in ${backoffMs}ms: ${errorMessage(e)}`);
         await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
         backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
