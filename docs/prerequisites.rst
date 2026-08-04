@@ -17,12 +17,13 @@ See pumice-server's own README for setup (Docker image on GHCR, or run directly 
 * An account on that server. New accounts are created by an admin (via the admin
   dashboard or the API) — there's no self-service sign-up.
 
-Obsidian 1.12.7 or later
+Obsidian 1.13.4 or later
 --------------------------
 
-Pumice's settings tab uses Obsidian's declarative settings API where available
-(1.13.0+), with a classic fallback UI for versions between 1.12.7 and 1.13.0. Check
-your Obsidian version under **Settings → About**, and update if needed.
+Pumice's settings tab uses Obsidian's declarative settings API
+(``getSettingDefinitions()``), which is only available from 1.13.0 onward — there's
+no fallback UI for older versions. Check your Obsidian version under
+**Settings → About**, and update if needed.
 
 .. note::
 
