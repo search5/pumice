@@ -18,13 +18,27 @@ export default defineConfig([
   // real finding. docs/_static/custom.js is likewise not plugin code -- it's a small script for
   // the separate Sphinx documentation *website* (see docs/conf.py's html_js_files), served
   // alongside the docs, never touching Obsidian at all.
-  { ignores: ["src/generated/**", "main.js", "docs/_build/**", "scripts/**", "esbuild.config.mjs", "docs/_static/**"] },
+  // test/** holds vitest specs -- they assume a Node/vitest-globals runtime (fake-indexeddb,
+  // describe/it/expect), not an Obsidian plugin runtime, so obsidianmd's rules are a scope
+  // mismatch here for the same reason they're a mismatch for scripts/ above. vitest.config.ts is
+  // build/tooling config in the same vein as esbuild.config.mjs -- never ships inside main.js.
+  { ignores: ["src/generated/**", "main.js", "docs/_build/**", "scripts/**", "esbuild.config.mjs", "docs/_static/**", "test/**", "vitest.config.mts"] },
   ...obsidianmd.configs.recommended,
   {
     files: ["**/*.ts"],
     languageOptions: {
       parser: tsparser,
       parserOptions: { project: "./tsconfig.json" },
+    },
+  },
+  {
+    // settings.ts's resolveDefaultDeviceName() reads the desktop hostname via a require("os")
+    // call guarded by Platform.isDesktop (obsidianmd's own no-nodejs-modules rule expects and
+    // allows exactly this pattern -- Node built-ins don't exist on mobile at all). `require`
+    // itself just isn't a recognized global without this.
+    files: ["src/settings.ts"],
+    languageOptions: {
+      globals: { require: "readonly" },
     },
   },
 ]);
