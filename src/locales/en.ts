@@ -114,6 +114,7 @@ export const en: Record<string, string> = {
   "plugins.sync.msg-restored-version": "Successfully restored the version from {{time}}.",
   "plugins.sync.msg-retry-in-progress": "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)",
   "plugins.sync.msg-sync-progress": "Syncing ({{phase}} {{done}}/{{total}})",
+  "plugins.sync.msg-plugins-reloaded": "Reloaded {{count}} updated plugin(s): {{ids}}",
   "plugins.sync.option-currently-excluded-folders": " Currently excluded folders:",
   "setting.hotkeys.prompt-filter": "Search files...",
 

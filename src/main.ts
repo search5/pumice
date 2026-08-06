@@ -575,6 +575,7 @@ export default class SyncPlugin extends Plugin {
                 deleted: result.deleted,
               })
         );
+        await this.reloadUpdatedPlugins(result.updatedPluginIds);
       } catch (e: unknown) {
         progressNotice.hide();
         console.error("Sync failed:", e);
@@ -710,6 +711,46 @@ export default class SyncPlugin extends Plugin {
   private logDebug(message: string): void {
     console.debug(message);
     this.syncDiagnosticsLog.log("debug", message);
+  }
+
+  // Hot-reloads community plugins whose code changed as a result of this sync, instead of leaving
+  // them stale until the user happens to restart Obsidian -- app.plugins.disablePlugin()/
+  // enablePlugin() aren't in obsidian.d.ts's public surface, but this is the exact pair BRAT
+  // (obsidian42-brat) uses for its own reloadPlugin(), which is as close to a de facto standard
+  // as this ecosystem has for "make freshly-written plugin code take effect without a restart."
+  // Deliberately scoped to plugins already in enabledPlugins: a plugin that just appeared from
+  // another device but was never enabled on this one is left for the user to review and enable
+  // themselves via Community Plugins, same as installing any other plugin -- this only refreshes
+  // code the user already chose to run here, it never turns anything on for the first time.
+  // See #11_플러그인_핫리로드_구현_계획.md.
+  private async reloadUpdatedPlugins(pluginIds: string[]): Promise<void> {
+    if (pluginIds.length === 0) return;
+    const pluginsApi = (
+      this.app as unknown as {
+        plugins: { enabledPlugins: Set<string>; disablePlugin(id: string): Promise<void>; enablePlugin(id: string): Promise<void> };
+      }
+    ).plugins;
+
+    const reloaded: string[] = [];
+    for (const id of pluginIds) {
+      if (!pluginsApi.enabledPlugins.has(id)) continue;
+      try {
+        await pluginsApi.disablePlugin(id);
+        await pluginsApi.enablePlugin(id);
+        reloaded.push(id);
+      } catch (e: unknown) {
+        this.logDebug(`Failed to hot-reload plugin "${id}" after sync: ${errorMessage(e)}`);
+      }
+    }
+
+    if (reloaded.length > 0) {
+      new Notice(
+        t("plugins.sync.msg-plugins-reloaded", "Reloaded {{count}} updated plugin(s): {{ids}}", {
+          count: reloaded.length,
+          ids: reloaded.join(", "),
+        })
+      );
+    }
   }
 
   triggerDebouncedSync(): void {

@@ -10,12 +10,24 @@ import { mapWithConcurrency, streamWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
 import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPaths } from "./pluginSync";
+import { derivePluginIdsFromPaths } from "./pluginReload";
 import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
 // runtime shape of the settings object this class works with.
 type ClientSettings = SyncPluginSettings & { e2eePassword: string };
+
+export interface SyncResult {
+  uploaded: number;
+  downloaded: number;
+  deleted: number;
+  failed: number;
+  // Plugin ids touched by this sync's downloads/deletions (e.g. another device published a newer
+  // version) -- main.ts hot-reloads whichever of these are already enabled on this device instead
+  // of leaving them stale until the next restart. See #11_플러그인_핫리로드_구현_계획.md.
+  updatedPluginIds: string[];
+}
 
 // Reported by internalSync() so callers (main.ts's syncNow()) can show progress instead of just a
 // start/end Notice -- "done" counts items processed within the current phase, not overall.
@@ -518,7 +530,7 @@ export class SyncClient {
     return false;
   }
 
-  public async sync(): Promise<{ uploaded: number; downloaded: number; deleted: number; failed: number }> {
+  public async sync(): Promise<SyncResult> {
     let retries = 3;
     let delay = 1000;
 
@@ -999,7 +1011,7 @@ export class SyncClient {
     return { downloadedCount, failedPaths };
   }
 
-  private async internalSync(): Promise<{ uploaded: number; downloaded: number; deleted: number; failed: number }> {
+  private async internalSync(): Promise<SyncResult> {
     const metadata = getMetadata(this.token, this.settings);
     const vaultId = this.vault.getName();
 
@@ -1386,6 +1398,10 @@ export class SyncClient {
       downloaded: downloadCount,
       deleted: deleteCount,
       failed: failedUploadPaths.length + failedDownloadPaths.length,
+      updatedPluginIds: derivePluginIdsFromPaths(
+        needDownloadList.map((f) => f.getPath()),
+        this.vault.configDir
+      ),
     };
   }
 
