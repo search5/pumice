@@ -112,6 +112,7 @@ export const ko: Record<string, string> = {
   "plugins.sync.msg-restored-version": "{{time}} 의 버전을 성공적으로 복원했습니다.",
   "plugins.sync.msg-retry-in-progress": "동기화 실패, {{delay}}ms 후 재시도합니다... (남은 재시도: {{retries}})",
   "plugins.sync.msg-sync-progress": "동기화 중 ({{phase}} {{done}}/{{total}})",
+  "plugins.sync.msg-plugins-reloaded": "업데이트된 플러그인 {{count}}개 다시 불러옴: {{ids}}",
   "plugins.sync.option-currently-excluded-folders": " 현재 제외된 폴더:",
   "setting.hotkeys.prompt-filter": "파일 검색...",
 
