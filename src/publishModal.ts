@@ -5,10 +5,9 @@ import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
+import { classifyExistingFile, DiffType, isNewFileEligible, scanSingleFile } from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
-
-type DiffType = "new" | "changed" | "unchanged" | "to-delete" | "deleted";
 
 interface DiffItem {
   path: string;
@@ -43,13 +42,13 @@ function isUnderFolder(path: string, folders: string[]): boolean {
 const HASH_CONCURRENCY = 8;
 
 // ─── Delta computation ──────────────────────────────────────────────────────
-// Same rule as core Publish: "excluded folders" take priority over "included folders". If an
-// individual file has a publish frontmatter value, that overrides the folder settings (an explicit
-// override); otherwise, whether it's under an included folder decides auto-selection.
+// Eligibility is driven purely by an explicit publish:true/false in each file's own
+// frontmatter (see classifyExistingFile/isNewFileEligible in publishEligibility.ts) --
+// "excluded folders" still take priority (a hard filter, unrelated to eligibility), but
+// "included folders" no longer grants eligibility to a file with no publish field at all.
 async function scanForChanges(
   app: App,
   client: SyncClient,
-  includeFolders: string[],
   excludeFolders: string[],
   hashCache: ContentHashCache,
   focusFile?: TFile
@@ -61,12 +60,6 @@ async function scanForChanges(
   const diffs: DiffItem[] = [];
   const processedPaths = new Set<string>();
 
-  const isEligible = (path: string, publishFlag: boolean | null): boolean => {
-    if (publishFlag === true) return true;
-    if (publishFlag === false) return false;
-    return isUnderFolder(path, includeFolders);
-  };
-
   // Files that exist on both sides need their content hashed to tell whether they've changed — the
   // expensive I/O part — so that's collected here first and run concurrently below, separately from
   // the cheap synchronous classification (excluded/deleted) done in this pass.
@@ -75,7 +68,6 @@ async function scanForChanges(
     serverHash: string;
     localFile: TFile;
     publishFlag: boolean | null;
-    eligible: boolean;
     isFocused: boolean;
   }
   const candidates: Candidate[] = [];
@@ -92,13 +84,11 @@ async function scanForChanges(
       continue;
     }
 
-    const publishFlag = getPublishFlag(app, localFile);
     candidates.push({
       path: serverPath,
       serverHash,
       localFile,
-      publishFlag,
-      eligible: isEligible(serverPath, publishFlag),
+      publishFlag: getPublishFlag(app, localFile),
       isFocused: focusFile?.path === serverPath,
     });
   }
@@ -109,21 +99,12 @@ async function scanForChanges(
       return computeHash(data);
     });
 
-    if (localHash !== c.serverHash) {
-      return {
-        path: c.path,
-        serverHash: c.serverHash,
-        type: c.eligible || c.isFocused ? "changed" : "to-delete",
-        checked: true,
-      };
-    }
-    if (c.publishFlag === false && !c.isFocused) {
-      return { path: c.path, serverHash: c.serverHash, type: "to-delete", checked: true };
-    }
-    if (c.eligible || c.isFocused) {
-      return { path: c.path, serverHash: c.serverHash, type: "unchanged", checked: false };
-    }
-    return null;
+    const type = classifyExistingFile({
+      publishFlag: c.publishFlag,
+      contentChanged: localHash !== c.serverHash,
+      isFocused: c.isFocused,
+    });
+    return type ? { path: c.path, serverHash: c.serverHash, type, checked: type !== "unchanged" } : null;
   });
   for (const d of candidateDiffs) if (d) diffs.push(d);
 
@@ -132,21 +113,13 @@ async function scanForChanges(
     if (processedPaths.has(localFile.path)) continue;
     if (isUnderFolder(localFile.path, excludeFolders)) continue;
     const isFocused = focusFile?.path === localFile.path;
-    const eligible = isEligible(localFile.path, getPublishFlag(app, localFile));
+    const eligible = isNewFileEligible(getPublishFlag(app, localFile));
     if (eligible || isFocused) {
       diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: true });
     }
   }
 
   return diffs;
-}
-
-// "Publish current file" is an explicit single-file action — the user already decided to publish
-// it, so there's no need to fetch the server's whole file list (or walk the vault, like
-// scanForChanges does) just to pre-classify it as new/changed/unchanged first. It's always shown as
-// ready to publish; if it happens to already match what's on the server, re-uploading it is harmless.
-function scanSingleFile(focusFile: TFile): DiffItem[] {
-  return [{ path: focusFile.path, serverHash: "", type: "changed", checked: true }];
 }
 
 // ─── Section base ────────────────────────────────────────────────────────────
@@ -1189,19 +1162,23 @@ export class PublishModal extends Modal {
       // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
       // walk the way the general "Publish changes" entry point (no focus file) does.
       if (this.focusFile) {
-        // A file force-published without "publish: true" would go live on the server yet be invisible
-        // to future folder-wide scans (scanForChanges is frontmatter-driven) — require the frontmatter
-        // to be set BEFORE publishing rather than publishing first and telling the user afterward.
-        if (getPublishFlag(this.app, this.focusFile) === true) {
-          this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile), this.focusFile);
-        } else {
-          this.showError(t("plugins.publish.msg-set-publish-frontmatter-first", 'Add "publish: true" to this file\'s frontmatter before publishing it.'));
+        const publishFlag = getPublishFlag(this.app, this.focusFile);
+        if (publishFlag === null) {
+          // Neither true nor false: publishing (or cancelling) a file with no explicit
+          // frontmatter at all would go live/gone on the server yet be invisible to future
+          // folder-wide scans (scanForChanges is frontmatter-driven) — require the frontmatter
+          // to be set BEFORE acting rather than guessing.
+          this.showError(t("plugins.publish.msg-set-publish-frontmatter-first", 'Add "publish: true" or "publish: false" to this file\'s frontmatter first.'));
           this.reviewChangesSection.setDiffs([], this.focusFile);
+        } else {
+          // true -> publish; false -> cancel (unpublish) -- the server's remove endpoint is a
+          // harmless no-op if the file was never actually published, so there's no need to
+          // fetch the server's file list first just to check.
+          this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile.path, publishFlag), this.focusFile);
         }
       } else {
         const diffs = await scanForChanges(
           this.app, client ?? (client = await this.plugin.getSyncClient()),
-          this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
           this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
           this.plugin.contentHashCache
         );

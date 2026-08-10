@@ -6,6 +6,7 @@ import type { ConflictResolution } from "./settings";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { describeLiveStatus } from "./liveStatus";
 import { t } from "./i18n";
+import { shouldStopTabPropagation } from "./settingsTabKeyboard";
 
 export class SyncSettingTab extends PluginSettingTab {
   plugin: SyncPlugin;
@@ -13,6 +14,19 @@ export class SyncSettingTab extends PluginSettingTab {
   constructor(app: App, plugin: SyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
+
+    // Restores native Tab-to-next-field navigation inside this settings tab -- see
+    // settingsTabKeyboard.ts for why this is needed (Obsidian's own core Settings modal
+    // otherwise intercepts Tab on an ancestor container and repurposes it as row-jump
+    // navigation). Bubble-phase listener on our own containerEl fires before Obsidian's
+    // listener on the shared ancestor container, so stopping propagation here keeps the event
+    // from ever reaching it -- preventDefault() is deliberately never called, so the browser's
+    // native focus-move behavior still applies.
+    this.containerEl.addEventListener("keydown", (evt) => {
+      if (shouldStopTabPropagation(evt.key)) {
+        evt.stopPropagation();
+      }
+    });
   }
 
   // Declarative settings API (Obsidian 1.13.0+, this plugin's minAppVersion floor) — display()
