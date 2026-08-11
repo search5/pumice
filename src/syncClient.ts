@@ -892,21 +892,38 @@ export class SyncClient {
                 if (mergeAttempt === null) {
                   needsBackupAndOverwrite = true;
                 } else if (!mergeAttempt.hasConflictMarkers) {
-                  // Clean merge -- local's and remote's edits didn't touch the same lines.
-                  const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
-                  // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
-                  // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
-                  // the merged result through the ordinary upload path on the next pass -- no
-                  // special immediate-reupload plumbing needed, since this write's mtime will be
-                  // newer than the server's stored version and Delta will naturally resolve it to
-                  // need_upload next time.
-                  await writeBinaryByPath(this.vault, currentPath, mergedData);
-                  new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
-                  const mergedFile = this.vault.getAbstractFileByPath(currentPath);
-                  if (this.hashCache && mergedFile instanceof TFile) {
-                    this.hashCache.set(mergedFile, await sha256(mergedData));
+                  // Clean merge -- local's and remote's edits didn't touch the same lines. If the
+                  // result is actually identical to what the server just sent (the common case for
+                  // a config-dir file like community-plugins.json when this device made no local
+                  // edits since its last sync), there is no real merge to speak of -- treat it as an
+                  // ordinary "adopt remote" download instead of a synthetic local edit. Doing the
+                  // latter unconditionally used to rely on this write being picked up by the
+                  // debounced auto-sync machinery and re-uploaded so lastSyncedHashStore would catch
+                  // up; whenever that indirect re-upload didn't happen promptly, the next sync's
+                  // Delta would still see this path as unresolved and re-offer it for merge, so the
+                  // exact same "Auto-merged" notice kept firing every sync even though nothing had
+                  // actually changed on either side.
+                  const remoteText = new TextDecoder("utf-8").decode(plainData);
+                  if (mergeAttempt.mergedText === remoteText) {
+                    // Falls through to the ordinary "adopt remote" write below (needsBackupAndOverwrite
+                    // is already false here) -- no local content is being discarded, so no backup and
+                    // no synthetic-edit notice.
+                  } else {
+                    const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
+                    // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
+                    // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
+                    // the merged result through the ordinary upload path on the next pass -- no
+                    // special immediate-reupload plumbing needed, since this write's mtime will be
+                    // newer than the server's stored version and Delta will naturally resolve it to
+                    // need_upload next time.
+                    await writeBinaryByPath(this.vault, currentPath, mergedData);
+                    new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
+                    const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+                    if (this.hashCache && mergedFile instanceof TFile) {
+                      this.hashCache.set(mergedFile, await sha256(mergedData));
+                    }
+                    handledByMerge = true;
                   }
-                  handledByMerge = true;
                 } else {
                   // Some region really was edited on both sides -- everything else already merged
                   // automatically; only that region is left, marked inline (git-style) for the user
