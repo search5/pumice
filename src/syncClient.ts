@@ -12,6 +12,7 @@ import { t } from "./i18n";
 import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPaths } from "./pluginSync";
 import { derivePluginIdsFromPaths } from "./pluginReload";
 import { resolveEffectiveConflictResolution } from "./bookmarksSync";
+import { groupIntoBatches, runBatchedDownloads } from "./batching";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -258,39 +259,6 @@ export function supportsStreamingUpload(settings: ClientSettings): boolean {
     },
   });
   return duplexAccessed;
-}
-
-// Splits needUploadList into batches bounded by both byte size and file count -- byte size alone
-// isn't enough of a cap: a real vault is dominated by many small notes, so a byte-only cap lets one
-// batch swallow nearly the whole file list before it fills up (confirmed against realistic-size
-// synthetic data in #4_구현_계획.md -- a byte-only version put 95%+ of files in a single batch).
-// A file larger than targetBytes on its own still gets its own batch rather than being skipped.
-function groupIntoBatches(
-  paths: string[],
-  sizeOf: (path: string) => number,
-  targetBytes: number,
-  maxFiles: number
-): string[][] {
-  const batches: string[][] = [];
-  let current: string[] = [];
-  let currentBytes = 0;
-  for (const path of paths) {
-    const size = sizeOf(path);
-    if (current.length > 0 && (currentBytes + size > targetBytes || current.length >= maxFiles)) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-    current.push(path);
-    currentBytes += size;
-    if (currentBytes > targetBytes || current.length >= maxFiles) {
-      batches.push(current);
-      current = [];
-      currentBytes = 0;
-    }
-  }
-  if (current.length > 0) batches.push(current);
-  return batches;
 }
 
 export class SyncClient {
@@ -826,7 +794,13 @@ export class SyncClient {
   // Downloads exactly `paths`, same shrinking-list-on-retry usage as uploadFileBatch above.
   // Per-file failures (hash mismatch, save error) are collected into `failedPaths` and returned
   // rather than thrown, so one bad file doesn't lose the rest of the batch.
-  private async downloadFileBatch(paths: string[], vaultId: string): Promise<{ downloadedCount: number; failedPaths: string[] }> {
+  // progressState is shared across every batch of a single sync's downloads (see runDownloads)
+  // so the reported "done/total" reflects the whole need-download set, not just this one batch.
+  private async downloadFileBatch(
+    paths: string[],
+    vaultId: string,
+    progressState: { done: number; total: number }
+  ): Promise<{ downloadedCount: number; failedPaths: string[] }> {
     if (paths.length === 0) return { downloadedCount: 0, failedPaths: [] };
 
     const metadata = getMetadata(this.token, this.settings);
@@ -836,7 +810,6 @@ export class SyncClient {
 
     let downloadedCount = 0;
     const failedPaths: string[] = [];
-    let downloadsProcessed = 0;
 
     await new Promise<void>((resolve, reject) => {
       const downloadStream = this.client.downloadFiles(downloadReq, metadata);
@@ -869,7 +842,7 @@ export class SyncClient {
 
           const fileDataBytes = concatUint8Arrays(buf.chunks);
           fileBuffers.delete(eofPath);
-          this.reportProgress("download", ++downloadsProcessed, paths.length);
+          this.reportProgress("download", ++progressState.done, progressState.total);
 
           const calculatedHash = await sha256(fileDataBytes.buffer as ArrayBuffer);
           if (calculatedHash !== eofPayload.getContentHash()) {
@@ -1300,6 +1273,7 @@ export class SyncClient {
     const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
     const hashByPath = new Map(localFilesMeta.map((f) => [f.path, f.content_hash]));
     const filesToDownload = needDownloadList.filter((f) => !f.getIsDeleted());
+    const downloadSizeByPath = new Map(filesToDownload.map((f) => [f.getPath(), f.getSizeBytes()]));
 
     const runUploads = async (): Promise<string[]> => {
       const UPLOAD_RETRY_ATTEMPTS = 2;
@@ -1351,30 +1325,41 @@ export class SyncClient {
 
     const runDownloads = async (): Promise<string[]> => {
       const DOWNLOAD_RETRY_ATTEMPTS = 2;
-      let pathsToDownload = filesToDownload.map((f) => f.getPath());
-      for (let attempt = 0; pathsToDownload.length > 0 && attempt <= DOWNLOAD_RETRY_ATTEMPTS; attempt++) {
-        if (attempt > 0) {
-          const message = `Retrying ${pathsToDownload.length} failed download(s), attempt ${attempt}/${DOWNLOAD_RETRY_ATTEMPTS}: ${formatPathList(pathsToDownload)}`;
-          console.debug(message);
-          this.onLog?.("debug", message);
-          await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+      // Same reasoning as uploads' MAX_FILES_PER_BATCH/BATCH_TARGET_BYTES: a DownloadFiles
+      // request for the whole need-download list (thousands of files on a fresh vault's first
+      // sync) used to be sent as one gRPC-Web call. Batching it means a batch's own failure
+      // (server-side resource pressure from too many files in one request, a dropped
+      // connection, etc.) only re-queues that batch on retry -- not the entire need-download
+      // set, which previously failed identically on every retry with no way to make progress.
+      const DOWNLOAD_BATCH_TARGET_BYTES = 20 * 1024 * 1024;
+      const MAX_FILES_PER_DOWNLOAD_BATCH = 500;
+      const pathsToDownload = filesToDownload.map((f) => f.getPath());
+      const progressState = { done: 0, total: pathsToDownload.length };
+
+      const { downloadedCount, failedPaths } = await runBatchedDownloads(
+        pathsToDownload,
+        downloadSizeByPath,
+        (batchPaths) => this.downloadFileBatch(batchPaths, vaultId, progressState),
+        {
+          targetBytes: DOWNLOAD_BATCH_TARGET_BYTES,
+          maxFiles: MAX_FILES_PER_DOWNLOAD_BATCH,
+          retryAttempts: DOWNLOAD_RETRY_ATTEMPTS,
+          onRetry: async (batchPaths, attempt) => {
+            const message = `Retrying ${batchPaths.length} failed download(s), attempt ${attempt}/${DOWNLOAD_RETRY_ATTEMPTS}: ${formatPathList(batchPaths)}`;
+            console.debug(message);
+            this.onLog?.("debug", message);
+            await new Promise((resolve) => window.setTimeout(resolve, 500 * attempt));
+          },
         }
-        try {
-          const { downloadedCount, failedPaths } = await this.downloadFileBatch(pathsToDownload, vaultId);
-          downloadCount += downloadedCount;
-          pathsToDownload = failedPaths;
-        } catch (e: unknown) {
-          console.error("Download batch failed:", e);
-          // Same reasoning as the upload branch above: an errored batch leaves every path in it
-          // unaccounted for, so they all remain retry candidates.
-        }
-      }
-      if (pathsToDownload.length > 0) {
-        const message = `${pathsToDownload.length} download(s) still failing after ${DOWNLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(pathsToDownload)}`;
+      );
+      downloadCount += downloadedCount;
+
+      if (failedPaths.length > 0) {
+        const message = `${failedPaths.length} download(s) still failing after ${DOWNLOAD_RETRY_ATTEMPTS} in-sync retries: ${formatPathList(failedPaths)}`;
         console.warn(message);
         this.onLog?.("warn", message);
       }
-      return pathsToDownload;
+      return failedPaths;
     };
 
     const [failedUploadPaths, failedDownloadPaths] = await Promise.all([runUploads(), runDownloads()]);
