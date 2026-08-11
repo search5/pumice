@@ -46,11 +46,11 @@ jobs:
         working-directory: docs
         run: sphinx-build -b html -d _build/doctrees/html-ko -D language=ko . _build/html/ko
 
-      - name: Write root redirect to English docs
+      - name: Add root redirect (browser-locale aware, falls back to /en/)
         working-directory: docs
         run: |
           mkdir -p _build/html
-          printf '<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=en/"></head><body>Redirecting to <a href="en/">English docs</a>...</body></html>' > _build/html/index.html
+          cp root-redirect.html _build/html/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
