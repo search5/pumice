@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { TFile } from "obsidian";
-import { SyncClient } from "../src/syncClient";
-import { getDefaultSettings } from "../src/settings";
-import type { SyncTransport, DownloadedFileWire } from "../src/syncTransport";
+import type { DownloadedFileWire } from "../src/syncTransport";
+import { fakeFileManager, fakeTransport, fakeVault, makeClient, sha256 } from "./syncClientTestUtils";
 
 // SyncClient's push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
 // llm-wiki/03-*.md): applyPushedFileChange() applies exactly the one file a `push` notification
@@ -12,79 +11,8 @@ import type { SyncTransport, DownloadedFileWire } from "../src/syncTransport";
 // `instanceof`) resolvable outside the real Obsidian app. Scoped to applyPushedFileChange's own
 // dispatch logic and the (pre-existing, unchanged) deletion/plain-download paths it reuses --
 // not attempting to cover downloadFileBatch's full conflict-resolution/merge matrix here, which
-// predates this file and is out of scope for this follow-up.
-
-async function sha256(buffer: ArrayBuffer): Promise<string> {
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function fakeTransport(overrides: Partial<SyncTransport> = {}): SyncTransport {
-  return {
-    delta: vi.fn(),
-    uploadBatch: vi.fn(),
-    downloadBatch: vi.fn(),
-    ping: vi.fn(),
-    size: vi.fn(),
-    purge: vi.fn(),
-    getUsernames: vi.fn(),
-    ...overrides,
-  };
-}
-
-interface FakeVault {
-  configDir: string;
-  getName: ReturnType<typeof vi.fn>;
-  getAbstractFileByPath: ReturnType<typeof vi.fn>;
-  createBinary: ReturnType<typeof vi.fn>;
-  modifyBinary: ReturnType<typeof vi.fn>;
-  adapter: {
-    exists: ReturnType<typeof vi.fn>;
-    remove: ReturnType<typeof vi.fn>;
-    writeBinary: ReturnType<typeof vi.fn>;
-  };
-}
-
-function fakeVault(): FakeVault {
-  return {
-    configDir: ".obsidian",
-    getName: vi.fn(() => "myvault"),
-    getAbstractFileByPath: vi.fn(() => null),
-    createBinary: vi.fn(async () => {}),
-    modifyBinary: vi.fn(async () => {}),
-    adapter: {
-      exists: vi.fn(async () => false),
-      remove: vi.fn(async () => {}),
-      writeBinary: vi.fn(async () => {}),
-    },
-  };
-}
-
-function fakeFileManager() {
-  return { trashFile: vi.fn(async () => {}) };
-}
-
-function makeClient(
-  transport: SyncTransport,
-  vault: FakeVault,
-  fileManager: ReturnType<typeof fakeFileManager>,
-  deletedFiles: Record<string, number> = {},
-  updateDeletedFiles: (deleted: Record<string, number>) => Promise<void> = async () => {}
-): SyncClient {
-  const settings = { ...getDefaultSettings(vault.configDir), e2eePassword: "" };
-  return new SyncClient(
-    transport,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    vault as any,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    fileManager as any,
-    "/plugins/pumice",
-    "test-token",
-    settings,
-    deletedFiles,
-    updateDeletedFiles
-  );
-}
+// predates this file and is out of scope for this follow-up. Shared fakes live in
+// syncClientTestUtils.ts (also used by syncClientHistory.test.ts).
 
 describe("SyncClient.applyPushedFileChange -- deletion", () => {
   it("trashes a file that's in the vault index", async () => {

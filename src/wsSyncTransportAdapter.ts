@@ -4,7 +4,18 @@
 // itself, so this is testable with a plain fake standing in for WsSyncTransport (see
 // test/wsSyncTransportAdapter.test.ts) rather than needing a real socket.
 
-import type { DeltaResult, DownloadedFileWire, PreparedUploadFile, PurgeResult, SyncTransport, UploadAckResult, VaultSize } from "./syncTransport";
+import type {
+  DeltaResult,
+  DownloadedFileWire,
+  HistoryVersionDownload,
+  HistoryVersionEntry,
+  PreparedUploadFile,
+  PurgeResult,
+  RestoreResult,
+  SyncTransport,
+  UploadAckResult,
+  VaultSize,
+} from "./syncTransport";
 import type { StreamFrame, WsSyncTransport } from "./wsTransport";
 
 interface WireFileMeta {
@@ -148,5 +159,59 @@ export class WsSyncTransportAdapter implements SyncTransport {
   async getUsernames(vaultId: string): Promise<string[]> {
     const response = await this.ws.request<{ usernames: string[] }>("usernames_req", { vaultId });
     return response.usernames;
+  }
+
+  async getHistory(vaultId: string, path: string): Promise<HistoryVersionEntry[]> {
+    const response = await this.ws.request<{
+      versions: Array<{ historyId: number; modifiedAtMs: number; sizeBytes: number; contentHash: string; deviceName: string; userName: string; deleted?: boolean; relatedPath?: string | null }>;
+    }>("history_req", { vaultId, path });
+    return response.versions.map((v) => ({
+      history_id: v.historyId,
+      modified_at_ms: v.modifiedAtMs,
+      size_bytes: v.sizeBytes,
+      content_hash: v.contentHash,
+      device_name: v.deviceName,
+      user_name: v.userName,
+      deleted: v.deleted,
+      related_path: v.relatedPath,
+    }));
+  }
+
+  async restoreHistoryVersion(vaultId: string, historyId: number, path = ""): Promise<RestoreResult> {
+    const response = await this.ws.request<{ ok: boolean; error: string }>("restore_req", { vaultId, historyId, path });
+    return { ok: response.ok, error: response.error };
+  }
+
+  // Same header/binary/eof frame shape as downloadBatch above (server-side both go through
+  // _file_chunk_to_frame -- see ws_sync_resource.py), just for exactly one file, so this
+  // doesn't need downloadBatch's multi-file "current" tracking.
+  async downloadHistoryVersion(vaultId: string, historyId: number, path = ""): Promise<HistoryVersionDownload> {
+    const chunks: Uint8Array[] = [];
+    let resolvedPath = "";
+    let contentHash = "";
+
+    await this.ws.requestStream("history_dl_req", { vaultId, historyId, path }, (frame: StreamFrame) => {
+      if (frame.kind === "json" && frame.op === "file_chunk_header") {
+        resolvedPath = (frame.payload as { path: string }).path;
+        return;
+      }
+      if (frame.kind === "binary") {
+        chunks.push(new Uint8Array(frame.data as ArrayBuffer));
+        return;
+      }
+      if (frame.kind === "json" && frame.op === "file_chunk_eof") {
+        contentHash = (frame.payload as { contentHash: string }).contentHash;
+      }
+    });
+
+    const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    return { data: merged.buffer, path: resolvedPath, contentHash };
   }
 }

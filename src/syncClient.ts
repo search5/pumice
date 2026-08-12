@@ -10,7 +10,7 @@ import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPath
 import { derivePluginIdsFromPaths } from "./pluginReload";
 import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 import { groupIntoBatches, runBatchedDownloads } from "./batching";
-import type { PurgeResult, RemoteFileMetaWire, SyncTransport, VaultSize } from "./syncTransport";
+import type { HistoryVersionEntry, PurgeResult, RemoteFileMetaWire, SyncTransport, VaultSize } from "./syncTransport";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -44,18 +44,9 @@ export type SyncRetryCallback = (info: { delayMs: number; retriesLeft: number })
 // directly, so this class stays decoupled from Obsidian's App/local-storage specifics.
 export type SyncLogCallback = (level: "debug" | "warn", message: string) => void;
 
-// Shape of a single /api/history entry, as returned by the server. Structurally compatible with
-// syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
-export interface HistoryVersionEntry {
-  history_id: number;
-  modified_at_ms: number;
-  size_bytes: number;
-  content_hash: string;
-  device_name: string;
-  user_name: string;
-  deleted?: boolean;
-  related_path?: string | null;
-}
+// Re-exported for callers that imported it from here before the 2026-08 WS history migration
+// follow-up moved the actual definition to syncTransport.ts (see that file's own comment).
+export type { HistoryVersionEntry } from "./syncTransport";
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
@@ -1198,106 +1189,49 @@ export class SyncClient {
     };
   }
 
-  // Helper for making HTTP REST API calls
-  private async requestHttp<T = unknown>(method: string, apiPath: string, body?: unknown, isBinary?: false): Promise<T>;
-  private async requestHttp(method: string, apiPath: string, body: unknown, isBinary: true): Promise<ArrayBuffer>;
-  private async requestHttp(method: string, apiPath: string, body?: unknown, isBinary = false): Promise<unknown> {
-    const protocol = this.settings.useTls ? "https" : "http";
-    const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}${apiPath}`;
-
-    const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
-      "X-Device-Name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
-      "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
-    };
-
-    const options: { method: string; headers: Record<string, string>; body?: string } = {
-      method: method,
-      headers: headers
-    };
-
-    if (body) {
-      options.body = JSON.stringify(body);
-      headers["Content-Type"] = "application/json";
-    }
-
-    const response = await this.httpFetch(url, options);
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`HTTP Request failed: ${response.status} ${response.statusText}\n${errText}`);
-    }
-
-    if (isBinary) {
-      return response.arrayBuffer();
-    }
-
-    return response.json();
-  }
-
-  // Fetch the backup version history for a given file (via the HTTP REST API)
+  // Fetch the backup version history for a given file. 2026-08 WS history migration follow-up
+  // (see #11_websocket_동기화_프로토콜_설계.md and llm-wiki/09-*.md) -- moved off REST
+  // (requestHttp) onto the transport, since the server-side REST views this used to hit have
+  // been removed in favor of the WS ops that already existed alongside them.
   public async getFileHistory(filePath: string): Promise<HistoryVersionEntry[]> {
     const vaultId = this.vault.getName();
-    const encodedPath = encodeURIComponent(filePath);
-    const path = `/api/history?vault_id=${encodeURIComponent(vaultId)}&path=${encodedPath}`;
-
-    const res = await this.requestHttp<{ versions?: HistoryVersionEntry[] }>("GET", path);
-    return res.versions || [];
+    return this.transport.getHistory(vaultId, filePath);
   }
 
-  // Download the binary content of a specific backup version ID (via the HTTP REST API)
+  // Download the binary content of a specific backup version ID.
   public async downloadHistoryVersion(filePath: string, historyId: number): Promise<ArrayBuffer> {
     const vaultId = this.vault.getName();
-    const path = `/api/history/download?vault_id=${encodeURIComponent(vaultId)}&history_id=${historyId}`;
-
-    const arrayBuffer = await this.requestHttp("GET", path, null, true);
+    const { data } = await this.transport.downloadHistoryVersion(vaultId, historyId);
 
     // History is stored server-side exactly as it was uploaded -- ciphertext when E2EE is on,
     // same as regular sync's UploadFiles/DownloadFiles. Every caller of this (version preview,
     // diff, copy) expects plaintext back, same as the regular download path already decrypts.
     if (this.settings.enableE2EE && this.settings.e2eePassword) {
       const key = await this.getE2eeKey();
-      return this.decryptData(arrayBuffer, key);
+      return this.decryptData(data, key);
     }
-    return arrayBuffer;
+    return data;
   }
 
   // Download a specific backup version's data, restore it to the original path, and also ask the
-  // server to record the restore so both sides stay in sync (via the HTTP REST API)
+  // server to record the restore so both sides stay in sync.
   public async restoreHistoryVersion(historyId: number, targetPath?: string): Promise<string> {
     const vaultId = this.vault.getName();
 
-    // 1. Send the restore request to the server (updates server-side DB metadata and immediately
-    // records the restore in history)
-    const restoreReqBody = {
-      vault_id: vaultId,
-      path: targetPath || "",
-      history_id: historyId
-    };
-    await this.requestHttp("POST", "/api/history/restore", restoreReqBody);
+    // 1. Tell the server to restore (updates its own vault copy + DB metadata + records the
+    // restore in history -- and now fires a change_notifier push, unlike the old REST view).
+    await this.transport.restoreHistoryVersion(vaultId, historyId, targetPath || "");
 
-    // 2. Receive the HTTP download response directly and extract the data
-    const protocol = this.settings.useTls ? "https" : "http";
-    const downloadUrl = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/history/download?vault_id=${encodeURIComponent(vaultId)}&history_id=${historyId}`;
-
-    const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
-      "X-Device-Name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
-      "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
-    };
-
-    const response = await this.httpFetch(downloadUrl, { method: "GET", headers });
-    if (!response.ok) {
-      throw new Error(`HTTP Download failed: ${response.status} ${response.statusText}`);
-    }
-
-    // Read the X-File-Path header to determine which path to restore to
-    const currentPath = targetPath || decodeURIComponent(response.headers.get("X-File-Path") || "");
+    // 2. Fetch the version's actual bytes ourselves too, for an immediate local write rather
+    // than waiting on that push round trip -- `path` is the server-resolved path (mirrors the
+    // old REST download response's X-File-Path header) for when no targetPath was given.
+    const { data, path: resolvedPath } = await this.transport.downloadHistoryVersion(vaultId, historyId, targetPath || "");
+    const currentPath = targetPath || resolvedPath;
     if (!currentPath) {
-      throw new Error("Failed to determine restore file path from server response header.");
+      throw new Error("Failed to determine restore file path from server response.");
     }
 
-    let arrayBuffer = await response.arrayBuffer();
-
+    let arrayBuffer = data;
     // Same as downloadHistoryVersion: the backup is stored as ciphertext when E2EE is on, and
     // has to be decrypted before it's written back into the vault -- otherwise "restore" replaces
     // the note's actual content with raw ciphertext.

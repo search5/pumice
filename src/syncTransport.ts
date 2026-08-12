@@ -1,13 +1,14 @@
-// The wire-level boundary SyncClient talks to for the three operations that actually move data
-// (delta comparison, upload, download) -- everything transport-agnostic (scanning, E2EE encrypt/
-// decrypt, conflict resolution/3-way merge, vault writes, hash caching) stays in SyncClient
-// completely unchanged; only "how do bytes get to/from the server" is behind this interface.
+// The wire-level boundary SyncClient talks to for every server-facing operation (delta
+// comparison, upload, download, history/restore, size/purge/usernames) -- everything
+// transport-agnostic (scanning, E2EE encrypt/decrypt, conflict resolution/3-way merge, vault
+// writes, hash caching) stays in SyncClient completely unchanged; only "how do bytes get to/from
+// the server" is behind this interface.
 //
-// Two implementations: GrpcWebSyncTransport (syncClient.ts, wraps the existing gRPC-Web
-// SyncServiceClient -- being removed once the WS transport fully replaces it) and
-// WsSyncTransportAdapter (wsSyncTransportAdapter.ts, wraps wsTransport.ts's WsSyncTransport).
-// See #11_websocket_동기화_프로토콜_설계.md for why this split exists instead of a from-scratch
-// reimplementation of SyncClient's sync orchestration.
+// Sole implementation: WsSyncTransportAdapter (wsSyncTransportAdapter.ts, wraps
+// wsTransport.ts's WsSyncTransport). A gRPC-Web implementation existed before PR5 removed
+// gRPC-Web entirely; REST (requestHttp in syncClient.ts) was the last non-WS path, used only for
+// history/restore until the 2026-08 WS migration follow-up moved those here too -- see
+// #11_websocket_동기화_프로토콜_설계.md and llm-wiki/09-*.md.
 
 export interface LocalFileMetaWire {
   path: string;
@@ -69,6 +70,38 @@ export interface PurgeResult {
   error: string;
 }
 
+// 2026-08 WS history migration follow-up (see #11_websocket_동기화_프로토콜_설계.md and
+// llm-wiki/09-*.md) -- history/restore moved from REST (requestHttp in syncClient.ts, now
+// removed server-side) onto this transport, same reasoning as size/purge/usernames above: no
+// REST equivalent exists anymore, so there's nowhere else for them to live.
+
+// Shape of a single history_req entry, as returned by the server. Structurally compatible with
+// syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
+export interface HistoryVersionEntry {
+  history_id: number;
+  modified_at_ms: number;
+  size_bytes: number;
+  content_hash: string;
+  device_name: string;
+  user_name: string;
+  deleted?: boolean;
+  related_path?: string | null;
+}
+
+export interface RestoreResult {
+  ok: boolean;
+  error: string;
+}
+
+// `path` is the server-resolved target path (from history_dl_req's file_chunk_header, mirroring
+// how the old REST download response's X-File-Path header let a caller with no path of its own
+// -- restoreHistoryVersion's targetPath-not-given case -- learn which path to restore to).
+export interface HistoryVersionDownload {
+  data: ArrayBuffer;
+  path: string;
+  contentHash: string;
+}
+
 export interface SyncTransport {
   delta(vaultId: string, localFiles: LocalFileMetaWire[]): Promise<DeltaResult>;
 
@@ -95,4 +128,11 @@ export interface SyncTransport {
   size(vaultId: string): Promise<VaultSize>;
   purge(vaultId: string): Promise<PurgeResult>;
   getUsernames(vaultId: string): Promise<string[]>;
+
+  getHistory(vaultId: string, path: string): Promise<HistoryVersionEntry[]>;
+  // `path` overrides which path to restore the downloaded bytes to server-side context (empty
+  // string = let the server fall back to the history entry's own stored path, same as
+  // restore_req's payload.path -- see ws_sync_resource.py's _handle_restore).
+  downloadHistoryVersion(vaultId: string, historyId: number, path?: string): Promise<HistoryVersionDownload>;
+  restoreHistoryVersion(vaultId: string, historyId: number, path?: string): Promise<RestoreResult>;
 }
