@@ -151,3 +151,45 @@ describe("WsSyncTransportAdapter.ping", () => {
     expect(ws.request).toHaveBeenCalledWith("ping", {});
   });
 });
+
+// 2026-08 Obsidian core Sync WS fidelity follow-up (see
+// #11_websocket_동기화_프로토콜_설계.md's re-analysis) -- size/purge/usernames.
+
+describe("WsSyncTransportAdapter.size", () => {
+  it("sends size_req and returns the vault/total/limit bytes", async () => {
+    const ws = fakeWs();
+    ws.request.mockResolvedValue({ vaultSizeBytes: 100, totalSizeBytes: 300, limitBytes: -1 });
+    const adapter = new WsSyncTransportAdapter(ws as any);
+
+    const result = await adapter.size("vault1");
+
+    expect(ws.request).toHaveBeenCalledWith("size_req", { vaultId: "vault1" });
+    expect(result).toEqual({ vaultSizeBytes: 100, totalSizeBytes: 300, limitBytes: -1 });
+  });
+});
+
+describe("WsSyncTransportAdapter.purge", () => {
+  it("sends purge_req and returns ok/error", async () => {
+    const ws = fakeWs();
+    ws.request.mockResolvedValue({ ok: true, error: "" });
+    const adapter = new WsSyncTransportAdapter(ws as any);
+
+    const result = await adapter.purge("vault1");
+
+    expect(ws.request).toHaveBeenCalledWith("purge_req", { vaultId: "vault1" });
+    expect(result).toEqual({ ok: true, error: "" });
+  });
+});
+
+describe("WsSyncTransportAdapter.getUsernames", () => {
+  it("sends usernames_req and returns the usernames list", async () => {
+    const ws = fakeWs();
+    ws.request.mockResolvedValue({ usernames: ["alice"] });
+    const adapter = new WsSyncTransportAdapter(ws as any);
+
+    const result = await adapter.getUsernames("vault1");
+
+    expect(ws.request).toHaveBeenCalledWith("usernames_req", { vaultId: "vault1" });
+    expect(result).toEqual(["alice"]);
+  });
+});

@@ -10,7 +10,7 @@ import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPath
 import { derivePluginIdsFromPaths } from "./pluginReload";
 import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 import { groupIntoBatches, runBatchedDownloads } from "./batching";
-import type { SyncTransport } from "./syncTransport";
+import type { PurgeResult, SyncTransport, VaultSize } from "./syncTransport";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -1117,6 +1117,22 @@ export class SyncClient {
 
   public async testConnection(): Promise<void> {
     await this.transport.ping();
+  }
+
+  // 2026-08 Obsidian core Sync WS fidelity follow-up (see
+  // #11_websocket_동기화_프로토콜_설계.md's re-analysis) -- size/purge/usernames. No REST
+  // equivalent exists for these (unlike history/restore above), so they go through the WS
+  // transport directly rather than requestHttp().
+  public async getVaultSize(): Promise<VaultSize> {
+    return this.transport.size(this.vault.getName());
+  }
+
+  public async purgeVault(): Promise<PurgeResult> {
+    return this.transport.purge(this.vault.getName());
+  }
+
+  public async getUsernames(): Promise<string[]> {
+    return this.transport.getUsernames(this.vault.getName());
   }
 
   // fetch()-shaped wrapper around Obsidian's requestUrl -- required instead of fetch() for CORS-free

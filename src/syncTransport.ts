@@ -53,6 +53,22 @@ export interface DownloadedFileWire {
   contentHash: string;
 }
 
+// 2026-08 Obsidian core Sync WS fidelity follow-up (see
+// #11_websocket_동기화_프로토콜_설계.md's re-analysis) -- size/purge/usernames aren't part of
+// the hot sync loop (matching why history/restore live on SyncClient directly instead of this
+// interface, see syncClient.ts), but unlike those they're WS ops with no REST equivalent, so
+// they do need to go through the transport.
+export interface VaultSize {
+  vaultSizeBytes: number;
+  totalSizeBytes: number;
+  limitBytes: number; // -1 = no quota configured
+}
+
+export interface PurgeResult {
+  ok: boolean;
+  error: string;
+}
+
 export interface SyncTransport {
   delta(vaultId: string, localFiles: LocalFileMetaWire[]): Promise<DeltaResult>;
 
@@ -75,4 +91,8 @@ export interface SyncTransport {
   ): Promise<{ downloadedCount: number; failedPaths: string[] }>;
 
   ping(): Promise<void>;
+
+  size(vaultId: string): Promise<VaultSize>;
+  purge(vaultId: string): Promise<PurgeResult>;
+  getUsernames(vaultId: string): Promise<string[]>;
 }

@@ -4,7 +4,7 @@
 // itself, so this is testable with a plain fake standing in for WsSyncTransport (see
 // test/wsSyncTransportAdapter.test.ts) rather than needing a real socket.
 
-import type { DeltaResult, DownloadedFileWire, PreparedUploadFile, SyncTransport, UploadAckResult } from "./syncTransport";
+import type { DeltaResult, DownloadedFileWire, PreparedUploadFile, PurgeResult, SyncTransport, UploadAckResult, VaultSize } from "./syncTransport";
 import type { StreamFrame, WsSyncTransport } from "./wsTransport";
 
 interface WireFileMeta {
@@ -130,5 +130,23 @@ export class WsSyncTransportAdapter implements SyncTransport {
 
   async ping(): Promise<void> {
     await this.ws.request("ping", {});
+  }
+
+  async size(vaultId: string): Promise<VaultSize> {
+    const response = await this.ws.request<{ vaultSizeBytes: number; totalSizeBytes: number; limitBytes: number }>(
+      "size_req",
+      { vaultId }
+    );
+    return { vaultSizeBytes: response.vaultSizeBytes, totalSizeBytes: response.totalSizeBytes, limitBytes: response.limitBytes };
+  }
+
+  async purge(vaultId: string): Promise<PurgeResult> {
+    const response = await this.ws.request<{ ok: boolean; error: string }>("purge_req", { vaultId });
+    return { ok: response.ok, error: response.error };
+  }
+
+  async getUsernames(vaultId: string): Promise<string[]> {
+    const response = await this.ws.request<{ usernames: string[] }>("usernames_req", { vaultId });
+    return response.usernames;
   }
 }
