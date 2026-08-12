@@ -3,6 +3,9 @@ import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient, type SyncProgressPhase } from "./syncClient";
+import { WsSyncTransport, HEARTBEAT_CHECK_INTERVAL_MS } from "./wsTransport";
+import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
+import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
@@ -12,7 +15,7 @@ import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { extractSseFrames, nextBackoffMs } from "./liveUpdates";
+import { nextBackoffMs } from "./liveUpdates";
 import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
@@ -109,6 +112,20 @@ export default class SyncPlugin extends Plugin {
   // unless the user opts in (Settings > Appearance > "Show status bar"), so this is a bonus for
   // desktop users rather than the primary indicator -- see liveConnectionState above for that.
   private statusBarItemEl: HTMLElement | null = null;
+  // Single persistent WS connection, shared by every syncNow()/testConnection() call and by the
+  // live-push loop -- reused across calls instead of a fresh connection (and auth round trip)
+  // per sync, matching #11_websocket_동기화_프로토콜_설계.md's whole premise. Null whenever no
+  // connection currently exists (never connected yet, or it dropped -- see wsTransport's
+  // onClose); getTransport() connects on demand and caches the result here.
+  private wsTransport: WsSyncTransport | null = null;
+  private wsHeartbeatTimer: number | null = null;
+  // Coalesces concurrent getTransport() callers (e.g. autoSync firing while a manual sync is
+  // still connecting) onto the same in-flight connect() instead of racing multiple sockets.
+  private wsConnecting: Promise<WsSyncTransport> | null = null;
+  // Lets runLiveUpdateLoop await "this connection dropped" instead of polling -- resolved by
+  // the onClose handler set up alongside wsTransport in getTransport().
+  private wsClosedPromise: Promise<void> | null = null;
+  private wsClosedResolve: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -393,10 +410,71 @@ export default class SyncPlugin extends Plugin {
     );
   }
 
+  private buildWsUrl(): string {
+    const protocol = this.settings.useTls ? "wss" : "ws";
+    return `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/ws`;
+  }
+
+  // Connects (or reuses) the single shared WS transport -- see wsTransport field comment. Throws
+  // if there's no stored token, same as every prior call site that needed one did.
+  private async getTransport(): Promise<SyncTransport> {
+    if (this.wsTransport) return new WsSyncTransportAdapter(this.wsTransport);
+    if (this.wsConnecting) return new WsSyncTransportAdapter(await this.wsConnecting);
+
+    const token = await this.getToken();
+    if (!token) {
+      throw new Error(t("settings.msg-no-token", "No sync token is set."));
+    }
+
+    this.wsConnecting = (async () => {
+      const ws = new WsSyncTransport((url) => new WebSocket(url));
+      await ws.connect(this.buildWsUrl(), {
+        token,
+        vaultId: this.app.vault.getName(),
+        deviceName: this.settings.deviceName || "",
+        userName: this.settings.userName || "",
+        clientVersion: this.manifest.version,
+      });
+      ws.onChangePush(() => void this.syncNow());
+      ws.onClose(() => {
+        if (this.wsTransport === ws) this.wsTransport = null;
+        if (this.wsHeartbeatTimer !== null) {
+          window.clearInterval(this.wsHeartbeatTimer);
+          this.wsHeartbeatTimer = null;
+        }
+        this.setLiveConnectionState(this.settings.liveUpdates ? "reconnecting" : "disabled");
+        this.wsClosedResolve?.();
+        this.wsClosedResolve = null;
+      });
+      this.wsClosedPromise = new Promise((resolve) => (this.wsClosedResolve = resolve));
+      this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
+      this.wsTransport = ws;
+      this.setLiveConnectionState("connected");
+      return ws;
+    })();
+
+    try {
+      return new WsSyncTransportAdapter(await this.wsConnecting);
+    } finally {
+      this.wsConnecting = null;
+    }
+  }
+
+  private disconnectTransport(): void {
+    this.wsTransport?.close();
+    this.wsTransport = null;
+    if (this.wsHeartbeatTimer !== null) {
+      window.clearInterval(this.wsHeartbeatTimer);
+      this.wsHeartbeatTimer = null;
+    }
+  }
+
   async getSyncClient(): Promise<SyncClient> {
     const token = await this.getToken();
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+    const transport = await this.getTransport();
     return new SyncClient(
+      transport,
       this.app.vault,
       this.app.fileManager,
       pluginDir,
@@ -424,6 +502,7 @@ export default class SyncPlugin extends Plugin {
   onunload(): void {
     this.unloading = true;
     this.stopAutoSync();
+    this.disconnectTransport();
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -485,7 +564,9 @@ export default class SyncPlugin extends Plugin {
     }
 
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+    const transport = await this.getTransport();
     const client = new SyncClient(
+      transport,
       this.app.vault,
       this.app.fileManager,
       pluginDir,
@@ -531,7 +612,9 @@ export default class SyncPlugin extends Plugin {
 
       try {
         const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+        const transport = await this.getTransport();
         const client = new SyncClient(
+          transport,
           this.app.vault,
           this.app.fileManager,
           pluginDir,
@@ -643,11 +726,12 @@ export default class SyncPlugin extends Plugin {
     this.statusBarItemEl.createSpan({ text: t(labelKey, labelFallback) });
   }
 
-  // Opens GET /watch (a plain SSE connection, not gRPC-Web -- see #10_실시간_변경_알림_구현_계획.md)
-  // and triggers syncNow() whenever the server reports a change, instead of waiting for the next
-  // autoSync tick. Reconnects with exponential backoff on any error; exits cleanly once
-  // liveUpdates is turned off or the plugin unloads (checked at both loop levels, since a single
-  // connection can live for a long time between read() calls).
+  // Keeps the shared WS transport (see wsTransport field) connected for as long as liveUpdates
+  // stays on, reconnecting with exponential backoff on any error. getTransport() itself does the
+  // actual connect + wires onChangePush(() => syncNow()) + starts the heartbeat -- this loop's
+  // job is just noticing a drop (via wsClosedPromise) and re-establishing it. Formerly a GET
+  // /watch SSE connection (see #10_실시간_변경_알림_구현_계획.md); replaced by the same WS
+  // connection syncNow()/testConnection() already use, per #11_websocket_동기화_프로토콜_설계.md.
   private async runLiveUpdateLoop(): Promise<void> {
     const INITIAL_BACKOFF_MS = 1000;
     const MAX_BACKOFF_MS = 60000;
@@ -656,47 +740,12 @@ export default class SyncPlugin extends Plugin {
     while (this.settings.liveUpdates && !this.unloading) {
       try {
         this.setLiveConnectionState("connecting");
-        const token = await this.getToken();
-        if (!token) {
-          // Falls through to the catch block below instead of a silent sleep-and-continue --
-          // that used to leave the status stuck on "connecting" forever with nothing in the
-          // diagnostics log, indistinguishable from a slow-but-working connection attempt.
-          throw new Error(t("settings.msg-no-token", "No sync token is set."));
-        }
-
-        const client = await this.getSyncClient();
-        const vaultId = encodeURIComponent(this.app.vault.getName());
-        // requestUrl() can't do this: its response has no ReadableStream/incremental-read option,
-        // it hands back the complete body only once the whole response has arrived -- fundamentally
-        // incompatible with reading an SSE stream as it comes in. Raw fetch() is the only API that
-        // supports it (same reasoning as syncClient.ts's uploadFilesStreaming()). Routed through
-        // window (unknown-cast) rather than the bare global for the same reason as there: an
-        // eslint-comments/no-restricted-disable block forbids suppressing this rule via a disable
-        // comment outright, so this is what actually keeps the warning from firing.
-        const windowFetch = (window as unknown as { fetch: typeof fetch }).fetch;
-        const response = await windowFetch(`${client.getPublishHost()}/watch?vault_id=${vaultId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok || !response.body) {
-          throw new Error(`/watch request failed: ${response.status}`);
-        }
-        this.setLiveConnectionState("connected");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (this.settings.liveUpdates && !this.unloading) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const extracted = extractSseFrames(buffer);
-          buffer = extracted.remainder;
-          if (extracted.changed) void this.syncNow();
-        }
-
-        // The stream ended (server closed it, or we broke out above) rather than erroring --
-        // reconnect immediately at the base backoff instead of treating it like a failure.
+        await this.getTransport();
         backoffMs = INITIAL_BACKOFF_MS;
+
+        // Waits until this connection drops (getTransport()'s onClose handler resolves this and
+        // updates liveConnectionState) before looping around to reconnect.
+        if (this.wsClosedPromise) await this.wsClosedPromise;
       } catch (e: unknown) {
         this.setLiveConnectionState("reconnecting");
         this.logDebug(`Live update connection error, retrying in ${backoffMs}ms: ${errorMessage(e)}`);

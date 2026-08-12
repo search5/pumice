@@ -303,4 +303,14 @@ describe("WsSyncTransport connection close", () => {
     await expect(p1).rejects.toBeInstanceOf(Error);
     await expect(p2).rejects.toBeInstanceOf(Error);
   });
+
+  it("calls the onClose callback so a caller can stop treating this instance as usable", async () => {
+    const { transport, ws } = await connectedTransport();
+    const onClose = vi.fn();
+    transport.onClose(onClose);
+
+    ws.simulateClose();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

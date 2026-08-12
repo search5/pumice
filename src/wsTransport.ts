@@ -57,9 +57,12 @@ export interface WsLike {
   send(data: string | ArrayBufferLike | ArrayBufferView): void;
   close(code?: number, reason?: string): void;
   binaryType?: string;
-  onopen: (() => void) | null;
-  onclose: (() => void) | null;
-  onerror: (() => void) | null;
+  // ev params are optional (not just typed `unknown`) so a real WebSocket -- whose onopen/
+  // onclose/onerror always pass an Event -- is assignable here, while a fake test double can
+  // still just call these with zero arguments.
+  onopen: ((ev?: unknown) => void) | null;
+  onclose: ((ev?: unknown) => void) | null;
+  onerror: ((ev?: unknown) => void) | null;
   onmessage: ((ev: { data: unknown }) => void) | null;
 }
 
@@ -98,8 +101,17 @@ export class WsSyncTransport {
 
   private lastMessageTs = 0;
   private onPush?: () => void;
+  private onCloseCb?: () => void;
 
   constructor(private readonly wsFactory: WsFactory) {}
+
+  // Lets the caller (wsSyncClient/main.ts) notice a dropped connection and stop treating a
+  // cached transport instance as usable -- without this there's no way to tell "still open" from
+  // "the socket died and every future request() will just reject" apart from trying one and
+  // catching the failure.
+  onClose(cb: () => void): void {
+    this.onCloseCb = cb;
+  }
 
   onChangePush(cb: () => void): void {
     this.onPush = cb;
@@ -337,6 +349,7 @@ export class WsSyncTransport {
     this.unaryPending.clear();
     for (const pending of this.streamPending.values()) pending.reject(err);
     this.streamPending.clear();
+    this.onCloseCb?.();
   }
 
   // ── heartbeat: idle-based, mirrors Obsidian core's own Sync plugin. Deliberately doesn't
