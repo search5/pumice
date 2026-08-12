@@ -2,3 +2,4 @@ node_modules/
 main.js
 docs/_build/
 docs/locale/*/LC_MESSAGES/*.mo
+coverage/

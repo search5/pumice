@@ -15,7 +15,7 @@ export default defineConfig([
   // describe/it/expect), not an Obsidian plugin runtime, so obsidianmd's rules are a scope
   // mismatch here for the same reason they're a mismatch for scripts/ above. vitest.config.ts is
   // build/tooling config in the same vein as esbuild.config.mjs -- never ships inside main.js.
-  { ignores: ["main.js", "docs/_build/**", "scripts/**", "esbuild.config.mjs", "docs/_static/**", "test/**", "vitest.config.mts"] },
+  { ignores: ["main.js", "docs/_build/**", "scripts/**", "esbuild.config.mjs", "docs/_static/**", "test/**", "vitest.config.mts", "coverage/**"] },
   ...obsidianmd.configs.recommended,
   {
     files: ["**/*.ts"],

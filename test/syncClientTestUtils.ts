@@ -29,16 +29,30 @@ export function fakeTransport(overrides: Partial<SyncTransport> = {}): SyncTrans
   };
 }
 
+// Full surface syncClient.ts actually calls on Vault/Vault.adapter (audited via
+// `grep -oE "\bvault\.[a-zA-Z]+\(|\bvault\.adapter\.[a-zA-Z]+\(" src/syncClient.ts`) --
+// every method is a vi.fn() with a harmless default (empty list / null / no-op resolve) so a
+// test only needs to .mockImplementation()/.mockResolvedValue() the ones its scenario actually
+// exercises, without ever needing to extend this shared shape (a coverage-drive push added many
+// callers of this fake at once -- see llm-wiki/10-*.md -- so this is deliberately exhaustive
+// up front to avoid parallel edits to this file colliding).
 export interface FakeVault {
   configDir: string;
   getName: ReturnType<typeof vi.fn>;
+  getFiles: ReturnType<typeof vi.fn>;
   getAbstractFileByPath: ReturnType<typeof vi.fn>;
+  readBinary: ReturnType<typeof vi.fn>;
   createBinary: ReturnType<typeof vi.fn>;
   modifyBinary: ReturnType<typeof vi.fn>;
+  createFolder: ReturnType<typeof vi.fn>;
   adapter: {
     exists: ReturnType<typeof vi.fn>;
-    remove: ReturnType<typeof vi.fn>;
+    list: ReturnType<typeof vi.fn>;
+    mkdir: ReturnType<typeof vi.fn>;
+    readBinary: ReturnType<typeof vi.fn>;
     writeBinary: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    stat: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -46,13 +60,20 @@ export function fakeVault(): FakeVault {
   return {
     configDir: ".obsidian",
     getName: vi.fn(() => "myvault"),
+    getFiles: vi.fn(() => []),
     getAbstractFileByPath: vi.fn(() => null),
+    readBinary: vi.fn(async () => new ArrayBuffer(0)),
     createBinary: vi.fn(async () => {}),
     modifyBinary: vi.fn(async () => {}),
+    createFolder: vi.fn(async () => {}),
     adapter: {
       exists: vi.fn(async () => false),
-      remove: vi.fn(async () => {}),
+      list: vi.fn(async () => ({ files: [], folders: [] })),
+      mkdir: vi.fn(async () => {}),
+      readBinary: vi.fn(async () => new ArrayBuffer(0)),
       writeBinary: vi.fn(async () => {}),
+      remove: vi.fn(async () => {}),
+      stat: vi.fn(async () => null),
     },
   };
 }
