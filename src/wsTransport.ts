@@ -31,6 +31,12 @@ export interface InitOkPayload {
   serverVersion: string;
   timestampMs: number;
   maxInFlight: number;
+  // Advertised per-file upload cap, mirroring Obsidian core's own Sync client (perFileMax) --
+  // see #11_websocket_동기화_프로토콜_설계.md's re-analysis. Not yet enforced client-side before
+  // attempting an upload (the server already rejects an oversized file with a clear per-file
+  // UploadAck error, same as a hash mismatch) -- connect()'s caller gets this value in the
+  // resolved InitOkPayload if it ever wants to skip the wasted round trip up front.
+  maxFileSizeBytes: number;
 }
 
 export class WsTransportError extends Error {
@@ -71,6 +77,7 @@ export type WsFactory = (url: string) => WsLike;
 interface PendingUnary {
   resolve: (payload: unknown) => void;
   reject: (err: Error) => void;
+  sentAt: number;
 }
 
 interface PendingStream {
@@ -84,6 +91,13 @@ interface PendingStream {
 export const HEARTBEAT_CHECK_INTERVAL_MS = 20_000;
 const PING_AFTER_IDLE_MS = 10_000;
 const DISCONNECT_AFTER_IDLE_MS = 120_000;
+// Mirrors Obsidian core's own Sync client, which wraps every request() in a 60s timeout and
+// disconnects the whole connection on expiry rather than just failing that one request (there's
+// no way to know the request is simply lost vs. the connection itself being half-dead). Checked
+// via checkHeartbeat() polling, like the idle thresholds above, for the same testability reason
+// (see that section's own comment) -- so an unanswered request can take up to ~this plus one
+// heartbeat interval to actually be detected, not exactly REQUEST_TIMEOUT_MS.
+const REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_IN_FLIGHT = 8;
 
 export class WsSyncTransport {
@@ -136,6 +150,7 @@ export class WsSyncTransport {
             resolve(initOk);
           },
           reject,
+          sentAt: Date.now(),
         });
         this.sendJson({ requestId, op: "init", payload: init });
       };
@@ -169,8 +184,11 @@ export class WsSyncTransport {
           this.releaseUnarySlot();
           reject(e);
         },
+        sentAt: 0, // set for real in send() below -- a request queued behind maxInFlight hasn't
+        // actually gone out yet, so its timeout budget shouldn't start counting down until it has.
       };
       const send = () => {
+        pending.sentAt = Date.now();
         this.unaryPending.set(requestId, pending);
         this.sendJson({ requestId, op, payload });
       };
@@ -247,7 +265,13 @@ export class WsSyncTransport {
           this.sendJson({
             requestId,
             op: "file_chunk_header",
-            payload: { vaultId, path: file.path, totalBytes: file.totalBytes, modifiedAtMs: file.modifiedAtMs },
+            // contentHash declared up front here too (not just at eof below), mirroring
+            // Obsidian core's own Sync client -- see #11_websocket_동기화_프로토콜_설계.md's
+            // re-analysis and wire_types.ChunkHeader's docstring (server side) for why.
+            payload: {
+              vaultId, path: file.path, totalBytes: file.totalBytes, modifiedAtMs: file.modifiedAtMs,
+              contentHash: file.contentHash,
+            },
           });
           this.ws!.send(file.data);
           this.sendJson({ requestId, op: "file_chunk_eof", payload: { path: file.path, contentHash: file.contentHash } });
@@ -365,8 +389,28 @@ export class WsSyncTransport {
     const idleMs = Date.now() - this.lastMessageTs;
     if (idleMs > DISCONNECT_AFTER_IDLE_MS) {
       this.close();
+      return;
     } else if (idleMs > PING_AFTER_IDLE_MS) {
       this.sendJson({ requestId: this.allocateRequestId(), op: "ping", payload: {} });
+    }
+    this.checkRequestTimeouts();
+  }
+
+  // A pinging connection can still have an individual request whose response was silently lost
+  // (server bug, dropped frame) -- the idle check above alone would never catch that, since
+  // pings/pongs keep lastMessageTs fresh indefinitely. Mirrors Obsidian core's own per-request
+  // timeout (see REQUEST_TIMEOUT_MS): reject that one request with a distinguishable error, then
+  // tear down the whole connection the same way core does -- there's no way to know the request
+  // is simply lost vs. the connection itself being wedged, so the safe assumption is the latter.
+  private checkRequestTimeouts(): void {
+    const now = Date.now();
+    for (const [requestId, pending] of this.unaryPending) {
+      if (now - pending.sentAt > REQUEST_TIMEOUT_MS) {
+        this.unaryPending.delete(requestId);
+        pending.reject(new Error("Request timed out"));
+        this.close();
+        return;
+      }
     }
   }
 }

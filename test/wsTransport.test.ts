@@ -86,9 +86,17 @@ describe("WsSyncTransport.connect", () => {
     ]);
 
     const requestId = ws.jsonSent("init")[0].requestId;
-    ws.simulateJson({ requestId, op: "init_ok", payload: { serverVersion: "0.1.0", timestampMs: 1000, maxInFlight: 8 } });
+    ws.simulateJson({
+      requestId, op: "init_ok",
+      payload: { serverVersion: "0.1.0", timestampMs: 1000, maxInFlight: 8, maxFileSizeBytes: 2147483648 },
+    });
 
-    await expect(promise).resolves.toEqual({ serverVersion: "0.1.0", timestampMs: 1000, maxInFlight: 8 });
+    // maxFileSizeBytes (perFileMax, see #11_websocket_동기화_프로토콜_설계.md's re-analysis)
+    // isn't consumed internally by the transport the way maxInFlight is -- it just has to reach
+    // the caller unmodified in the resolved payload.
+    await expect(promise).resolves.toEqual({
+      serverVersion: "0.1.0", timestampMs: 1000, maxInFlight: 8, maxFileSizeBytes: 2147483648,
+    });
   });
 
   it("rejects if the server responds to init with an error", async () => {
@@ -222,7 +230,11 @@ describe("WsSyncTransport.runUpload", () => {
     expect(begin.payload).toEqual({ vaultId: "v1", fileCount: 1 });
     const requestId = begin.requestId;
 
-    expect(ws.jsonSent("file_chunk_header")[0]).toMatchObject({ requestId, payload: { path: "a.md", totalBytes: 2, modifiedAtMs: 5 } });
+    // contentHash is declared up front in the header now too, not just at eof below (item 6,
+    // 2026-08 re-analysis follow-up -- see wsTransport.ts's comment at the send site).
+    expect(ws.jsonSent("file_chunk_header")[0]).toMatchObject({
+      requestId, payload: { path: "a.md", totalBytes: 2, modifiedAtMs: 5, contentHash: "h1" },
+    });
     expect(ws.binarySent()).toEqual([data]);
     expect(ws.jsonSent("file_chunk_eof")[0]).toMatchObject({ requestId, payload: { path: "a.md", contentHash: "h1" } });
 
@@ -289,6 +301,61 @@ describe("WsSyncTransport heartbeat", () => {
     transport.checkHeartbeat();
 
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("WsSyncTransport request timeout", () => {
+  // Mirrors Obsidian core's own Sync client, which wraps every request() in a 60s timeout and
+  // disconnects on expiry (see #11_websocket_동기화_프로토콜_설계.md's re-analysis, 2026-08).
+  // Like the heartbeat above, checked via checkHeartbeat() polling rather than a dedicated
+  // per-request timer -- this file deliberately never calls setTimeout/setInterval itself.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not time out a request answered well within 60s", async () => {
+    const { transport, ws } = await connectedTransport();
+    const p = transport.request("delta_req", {});
+
+    vi.advanceTimersByTime(5_000);
+    transport.checkHeartbeat();
+
+    const requestId = ws.jsonSent("delta_req")[0].requestId;
+    ws.simulateJson({ requestId, op: "delta_res", payload: { needUpload: [] } });
+
+    await expect(p).resolves.toEqual({ needUpload: [] });
+  });
+
+  it("rejects a request that never gets a response after 60s and closes the connection", async () => {
+    const { transport, ws } = await connectedTransport();
+    const onClose = vi.fn();
+    ws.onclose = onClose;
+
+    const p = transport.request("delta_req", {});
+    vi.advanceTimersByTime(65_000);
+    transport.checkHeartbeat();
+
+    await expect(p).rejects.toThrow(/timed out/i);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("does not affect other in-flight requests when one of them times out", async () => {
+    const { transport, ws } = await connectedTransport(); // maxInFlight: 2
+    const p1 = transport.request("delta_req", {});
+    vi.advanceTimersByTime(65_000);
+    const p2 = transport.request("delta_req", {}); // sent well within its own 60s budget
+
+    transport.checkHeartbeat();
+
+    await expect(p1).rejects.toThrow(/timed out/i);
+    // p2 was rejected too, but only as collateral damage of the connection closing (handleClose
+    // rejects everything still pending) -- there's no way to time out just one request without
+    // tearing down the shared connection, matching Obsidian core's own behavior.
+    await expect(p2).rejects.toBeInstanceOf(Error);
   });
 });
 
