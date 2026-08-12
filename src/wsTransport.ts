@@ -39,6 +39,19 @@ export interface InitOkPayload {
   maxFileSizeBytes: number;
 }
 
+// 2026-08 Obsidian core Sync WS fidelity follow-up (see
+// #11_websocket_동기화_프로토콜_설계.md and llm-wiki/07-*.md) -- push now carries the changed
+// file's own metadata (matching real Obsidian Sync's per-file push) instead of a bare vaultId
+// flag that forced every push to trigger a full Delta re-scan regardless of how much changed.
+export interface PushedFileChangeMeta {
+  vaultId: string;
+  path: string;
+  modifiedAtMs: number;
+  sizeBytes: number;
+  contentHash: string;
+  isDeleted: boolean;
+}
+
 export class WsTransportError extends Error {
   code: string;
   constructor(code: string, message: string) {
@@ -114,7 +127,7 @@ export class WsSyncTransport {
   private streamQueue: Array<() => void> = [];
 
   private lastMessageTs = 0;
-  private onPush?: () => void;
+  private onPush?: (file: PushedFileChangeMeta) => void;
   private onCloseCb?: () => void;
 
   constructor(private readonly wsFactory: WsFactory) {}
@@ -127,7 +140,7 @@ export class WsSyncTransport {
     this.onCloseCb = cb;
   }
 
-  onChangePush(cb: () => void): void {
+  onChangePush(cb: (file: PushedFileChangeMeta) => void): void {
     this.onPush = cb;
   }
 
@@ -327,7 +340,7 @@ export class WsSyncTransport {
 
     if (op === "pong") return;
     if (op === "push") {
-      this.onPush?.();
+      this.onPush?.(payload as PushedFileChangeMeta);
       return;
     }
 

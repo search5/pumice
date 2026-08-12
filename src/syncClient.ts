@@ -10,7 +10,7 @@ import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPath
 import { derivePluginIdsFromPaths } from "./pluginReload";
 import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 import { groupIntoBatches, runBatchedDownloads } from "./batching";
-import type { PurgeResult, SyncTransport, VaultSize } from "./syncTransport";
+import type { PurgeResult, RemoteFileMetaWire, SyncTransport, VaultSize } from "./syncTransport";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -725,6 +725,48 @@ export class SyncClient {
     });
   }
 
+  // Extracted from internalSync's 3-2 step (see runDownloads's own comment for why deletions and
+  // downloads are handled separately) so the same logic can also run for a single pushed
+  // deletion (see applyPushedFileChange) without a full Delta round trip. Returns whether a
+  // local delete actually happened (internalSync's deleteCount only increments on that, not on
+  // a not-found no-op) -- the deletedFiles tombstone is cleared regardless, same as before this
+  // was extracted.
+  private async applyServerDeletion(metaPath: string): Promise<boolean> {
+    let deleted = false;
+    try {
+      const file = this.vault.getAbstractFileByPath(metaPath);
+      if (file) {
+        await this.writeSelfPath(metaPath, () => this.fileManager.trashFile(file));
+        deleted = true;
+      } else if (await this.vault.adapter.exists(metaPath)) {
+        // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
+        // is the only option.
+        await this.writeSelfPath(metaPath, () => this.vault.adapter.remove(metaPath));
+        deleted = true;
+      }
+    } catch (e: unknown) {
+      console.error(`Failed to delete local file ${metaPath}:`, e);
+    }
+    if (this.deletedFiles[metaPath]) {
+      delete this.deletedFiles[metaPath];
+    }
+    return deleted;
+  }
+
+  // 2026-08 push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
+  // llm-wiki/03-*.md) -- applies exactly the one file a `push` notification named, instead of
+  // running a full internalSync()/Delta for every remote change regardless of how much actually
+  // changed. Safe to call concurrently with nothing else touching this SyncClient instance (the
+  // caller, main.ts, is responsible for not overlapping this with a full sync() call on shared
+  // mutable state like deletedFiles/hashCache -- see main.ts's isSyncing guard).
+  public async applyPushedFileChange(file: RemoteFileMetaWire): Promise<void> {
+    if (file.is_deleted) {
+      await this.applyServerDeletion(file.path);
+      return;
+    }
+    await this.downloadFileBatch([file.path], this.vault.getName(), { done: 0, total: 1 });
+  }
+
   private async internalSync(): Promise<SyncResult> {
     const vaultId = this.vault.getName();
 
@@ -967,24 +1009,7 @@ export class SyncClient {
     // 3-2. Apply server-side deletions locally (downloading tombstones)
     const filesToDelete = needDownloadList.filter((f) => f.is_deleted);
     for (const fileMeta of filesToDelete) {
-      const metaPath = fileMeta.path;
-      try {
-        const file = this.vault.getAbstractFileByPath(metaPath);
-        if (file) {
-          await this.writeSelfPath(metaPath, () => this.fileManager.trashFile(file));
-          deleteCount++;
-        } else if (await this.vault.adapter.exists(metaPath)) {
-          // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
-          // is the only option.
-          await this.writeSelfPath(metaPath, () => this.vault.adapter.remove(metaPath));
-          deleteCount++;
-        }
-      } catch (e: unknown) {
-        console.error(`Failed to delete local file ${metaPath}:`, e);
-      }
-      if (this.deletedFiles[metaPath]) {
-        delete this.deletedFiles[metaPath];
-      }
+      if (await this.applyServerDeletion(fileMeta.path)) deleteCount++;
     }
 
     // 4 & 5. UploadFiles and DownloadFiles run concurrently, not sequentially -- a path is only

@@ -3,7 +3,7 @@ import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient, type SyncProgressPhase } from "./syncClient";
-import { WsSyncTransport, HEARTBEAT_CHECK_INTERVAL_MS } from "./wsTransport";
+import { WsSyncTransport, HEARTBEAT_CHECK_INTERVAL_MS, type PushedFileChangeMeta } from "./wsTransport";
 import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
 import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
@@ -435,7 +435,7 @@ export default class SyncPlugin extends Plugin {
         userName: this.settings.userName || "",
         clientVersion: this.manifest.version,
       });
-      ws.onChangePush(() => void this.syncNow());
+      ws.onChangePush((file) => void this.applyPushedChange(file));
       ws.onClose(() => {
         if (this.wsTransport === ws) this.wsTransport = null;
         if (this.wsHeartbeatTimer !== null) {
@@ -669,6 +669,65 @@ export default class SyncPlugin extends Plugin {
       if (this.syncQueuedWhileRunning) {
         this.syncQueuedWhileRunning = false;
         this.logDebug("Running the sync that was queued while the previous one was in progress");
+        void this.syncNow();
+      }
+    }
+  }
+
+  // 2026-08 push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
+  // llm-wiki/03-*.md): applies exactly the one file a `push` notification named, instead of
+  // running a full syncNow()/Delta for every remote change no matter how much actually changed
+  // (matching real Obsidian Sync's per-file push). Shares syncNow()'s isSyncing/
+  // syncQueuedWhileRunning mutex -- if a full sync is already running, this is skipped rather
+  // than risking two independent SyncClient instances writing the same path at once (writeSelfPath's
+  // selfWritePaths set is shared plugin-wide); the in-flight (or queued-right-after) full sync's
+  // own Delta will pick this exact file up anyway, since the server just told every connected
+  // device it changed.
+  private async applyPushedChange(file: PushedFileChangeMeta): Promise<void> {
+    if (this.isSyncing) {
+      this.logDebug(`Sync already in progress -- skipping direct apply of pushed change for ${file.path} (the in-flight/queued sync will pick it up)`);
+      return;
+    }
+    const token = await this.getToken();
+    if (!token) return;
+
+    this.isSyncing = true;
+    try {
+      const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+      const transport = await this.getTransport();
+      const client = new SyncClient(
+        transport,
+        this.app.vault,
+        this.app.fileManager,
+        pluginDir,
+        token,
+        { ...this.settings, e2eePassword: this.e2eePassword },
+        this.deletedFiles,
+        async (deleted) => {
+          this.deletedFiles = deleted;
+          await this.savePluginData();
+        },
+        this.contentHashCache,
+        undefined,
+        undefined,
+        this.selfWritePaths,
+        (level, message) => this.syncDiagnosticsLog.log(level, message),
+        this.lastSyncedHashStore
+      );
+      await client.applyPushedFileChange({
+        path: file.path,
+        modified_at_ms: file.modifiedAtMs,
+        size_bytes: file.sizeBytes,
+        content_hash: file.contentHash,
+        is_deleted: file.isDeleted,
+      });
+    } catch (e: unknown) {
+      console.error(`Failed to apply pushed change for ${file.path}:`, e);
+    } finally {
+      this.isSyncing = false;
+      if (this.syncQueuedWhileRunning) {
+        this.syncQueuedWhileRunning = false;
+        this.logDebug("Running the sync that was queued while a pushed change was being applied");
         void this.syncNow();
       }
     }

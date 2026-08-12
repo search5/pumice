@@ -256,6 +256,23 @@ describe("WsSyncTransport push notifications", () => {
 
     expect(onPush).toHaveBeenCalledTimes(1);
   });
+
+  // 2026-08 push-metadata fidelity follow-up (see
+  // #11_websocket_동기화_프로토콜_설계.md and llm-wiki/07-*.md) -- push now carries the
+  // changed file's own metadata (matching real Obsidian Sync) instead of a bare vaultId flag.
+  it("passes the pushed file's metadata through to the callback", async () => {
+    const { transport, ws } = await connectedTransport();
+    const onPush = vi.fn();
+    transport.onChangePush(onPush);
+
+    ws.simulateJson({
+      requestId: 0,
+      op: "push",
+      payload: { vaultId: "v1", path: "a.md", modifiedAtMs: 1000, sizeBytes: 5, contentHash: "h1", isDeleted: false },
+    });
+
+    expect(onPush).toHaveBeenCalledWith({ vaultId: "v1", path: "a.md", modifiedAtMs: 1000, sizeBytes: 5, contentHash: "h1", isDeleted: false });
+  });
 });
 
 describe("WsSyncTransport heartbeat", () => {
