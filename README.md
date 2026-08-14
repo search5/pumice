@@ -2,19 +2,20 @@
 
 🇺🇸 English | [🇰🇷 한국어](README.ko.md)
 
-An Obsidian community plugin that syncs your vault with a self-hosted gRPC server
+An Obsidian community plugin that syncs your vault with a self-hosted server
 ([pumice-server](https://github.com/search5/pumice-server) — required, run it yourself).
 The goal is to sync instantly, no matter how many files are in the vault.
 
 ## Overview
 
 - **Client**: TypeScript, Obsidian community plugin (this repository)
-- **Server**: Python (`asyncioreactor` + `grpc.aio` + `Twisted`), see
+- **Server**: Python (`asyncioreactor` + `Twisted`), see
   [pumice-server](https://github.com/search5/pumice-server)
-- **Transport**: gRPC-Web (HTTP/2 multiplexing, bidirectional streaming) — many files are sent
-  concurrently over a single connection instead of one RPC per file. When the server is reachable
-  over TLS, uploads instead stream directly over a single `fetch()` request (no batching,
-  no buffering the whole payload in memory); otherwise they fall back to the gRPC-Web path above.
+- **Transport**: a single persistent WebSocket connection, opened automatically once you've
+  logged in and kept open for as long as Obsidian is running — modeled on Obsidian's own
+  built-in Sync plugin, so an edit on one device shows up on another right away instead of
+  waiting for a periodic sync. (Earlier versions used gRPC-Web, one HTTP/2 request per RPC with
+  no live push; this version replaces that entirely.)
 - **Auth**: a static token stored in Obsidian's own secret storage (`App#secretStorage`, desktop
   and mobile alike, no platform-specific code needed)
 
@@ -28,7 +29,6 @@ Key features:
 ## Requirements
 
 - Node.js (with npm)
-- `protoc` (verified with 3.21.12)
 - Obsidian 1.13.4+ (`manifest.json`'s `minAppVersion`). The settings tab renders entirely via
   the declarative settings API (`getSettingDefinitions()`), so it's searchable from Obsidian's
   own settings search; there's no legacy/imperative fallback UI to keep in sync.
@@ -72,11 +72,6 @@ git push --follow-tags
 time — Obsidian's installer uses it to pick a compatible release for users on older app
 versions, which matters once this plugin is submitted to the Community Plugins list.
 
-`npm install` fetches the `protoc-gen-grpc-web` binary via a `postinstall` script, and
-`npm run dev` / `build` / `lint` each generate `src/generated/` from `sync.proto` first
-(via `pre*` scripts) if it isn't there yet — the only thing you need installed yourself is
-`protoc`. See [Regenerating the gRPC-Web stubs](#regenerating-the-grpc-web-stubs) for details.
-
 ### Installing locally in Obsidian for testing
 
 1. Run `npm run build` to generate `main.js`.
@@ -84,65 +79,43 @@ versions, which matters once this plugin is submitted to the Community Plugins l
    `manifest.json`, and `styles.css` into it.
 3. Enable Pumice under Settings → Community plugins in Obsidian.
 
-## Regenerating the gRPC-Web stubs
+## How sync works
 
-`src/generated/` (`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`, `SyncServiceClientPb.d.ts`)
-is generated from `sync.proto`. The `.js`/`.ts` implementation files are gitignored and generated
-automatically the first time you run `npm run dev`/`build`/`lint` (via `scripts/ensure-generated.mjs`,
-wired up as a `pre*` script), so a fresh clone doesn't need a manual step. The two `.d.ts` files
-are committed, though (`SyncServiceClientPb.d.ts` is derived from the `.ts` via
-`tsc --declaration --emitDeclarationOnly` as part of `npm run proto:gen`) — this is deliberate:
-external tools that lint/typecheck this repo without running `npm install`/generation first can
-still resolve real types for every `pb.*`/`SyncServiceClient` reference from just the `.d.ts`s,
-instead of every such reference collapsing to `any` and cascading into hundreds of unrelated
-`no-unsafe-*` findings (confirmed locally — with only the `.d.ts` files present, `eslint .`
-reports zero findings related to this).
+Once you've logged in (Settings → Pumice → "Log in", which opens the server's login page in
+your system browser and hands a token back to Obsidian), the plugin keeps one WebSocket
+connection to the server open for as long as Obsidian is running — there's no separate "enable
+live updates" toggle or sync-interval setting to configure, matching how Obsidian's own official
+Sync works. That connection is what:
 
-The `pre*` scripts only run generation if the `.ts` implementation is missing though —
-if you modify `sync.proto`, regenerate the stubs explicitly and commit the two updated `.d.ts`
-files:
+- pushes local edits to the server (debounced briefly so a burst of keystrokes becomes one
+  upload, not one per keystroke),
+- receives other devices' changes and applies them immediately, and
+- runs a full safety-net sync every 30 seconds regardless of push activity, so nothing gets
+  permanently stuck even if a push notification is ever missed.
 
-```bash
-npm run proto:gen
-```
+The status bar icon reflects this connection the same way Obsidian core Sync's own icon does —
+hover it for a short status ("Syncing…", "Fully synced", "Sync error", etc.). Manually triggering
+a sync (ribbon icon or the command palette) still shows a toast notification; the automatic
+background activity above stays silent unless something actually fails.
 
-Prerequisites:
-- `protoc` installed on your system
-- `protoc-gen-js` (`node_modules/.bin/protoc-gen-js`, installed via `npm install`)
-- the `protoc-gen-grpc-web` binary (`bin/protoc-gen-grpc-web`, v1.5.0 — too large for the repo,
-  so `npm install` fetches it automatically via `scripts/fetch-protoc-gen-grpc-web.mjs`, a
-  `postinstall` script). If your platform/arch isn't supported by the script or the download
-  fails, it prints a fallback link to the
-  [grpc-web releases page](https://github.com/grpc/grpc-web/releases/tag/1.5.0) so you can fetch
-  it manually.
-
-`npm run proto:gen` runs the underlying command directly:
-
-```bash
-protoc \
-  --plugin=protoc-gen-js=./node_modules/.bin/protoc-gen-js \
-  --js_out=import_style=commonjs,binary:./src/generated \
-  --plugin=protoc-gen-grpc-web=./bin/protoc-gen-grpc-web \
-  --grpc-web_out=import_style=typescript,mode=grpcweb:./src/generated \
-  --proto_path=. \
-  sync.proto
-```
+If the connection drops (network blip, server restart, laptop sleep), it reconnects on its own
+with backoff and catches up on just what changed while it was gone — it doesn't rescan the whole
+vault on every reconnect.
 
 ## Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | serverHost | localhost | Pumice server address |
-| serverPort | 8080 | HTTP + gRPC-Web port |
+| serverPort | 8080 | HTTP + WebSocket port |
 | useTls | false | Use TLS (recommended for remote servers) |
 | deviceName | Obsidian Client | Name identifying this device |
 | userName | Obsidian User | User name |
 | syncFiles | true | Whether to sync files |
 | syncBookmarks | true | Whether to include bookmarks (`.obsidian/bookmarks.json`) |
+| syncPlugins | false | Sync installed community plugins' code/manifest (off by default — this syncs executable code, a bigger trust boundary than note content) |
+| syncPluginData | false | Also sync each plugin's own `data.json` (off by default — commonly holds secrets like API tokens in plaintext) |
 | ignorePatterns | see below | Path patterns excluded from sync |
-| autoSync | false | Enable automatic sync |
-| syncIntervalSeconds | 60 | Auto-sync interval (seconds) |
-| syncOnStartup | false | Sync on startup |
 | conflictResolution | manual | Conflict resolution strategy (`manual` / `server-wins` / `client-wins` / `merge`) |
 | enableE2EE | false | Enable end-to-end encryption |
 | publishIncludeFolders / publishExcludeFolders | - | Folders to include/exclude when publishing |
@@ -175,10 +148,14 @@ Default exclude patterns (`ignorePatterns` / `publishExcludeFolders`):
 ```
 pumice/
 ├── src/
-│   ├── main.ts                    # Plugin entry point
+│   ├── main.ts                    # Plugin entry point; owns the live connection lifecycle
 │   ├── settings.ts                # Settings types and defaults
 │   ├── settingsTab.ts             # Settings panel UI
-│   ├── syncClient.ts              # gRPC sync client
+│   ├── syncClient.ts              # Sync orchestration (scan/E2EE/conflict-resolution/hashing)
+│   ├── syncTransport.ts           # Transport-agnostic interface syncClient.ts talks to
+│   ├── wsTransport.ts             # WebSocket protocol layer (framing, heartbeat, reconnect)
+│   ├── wsSyncTransportAdapter.ts  # Adapts wsTransport.ts to the syncTransport.ts interface
+│   ├── liveUpdates.ts, liveStatus.ts  # Reconnect backoff; status bar icon/state model
 │   ├── syncHistoryModal.ts        # Sync history UI
 │   ├── fileRecoveryModal.ts       # File recovery UI
 │   ├── publishModal.ts            # Selective publish UI
@@ -189,16 +166,10 @@ pumice/
 │   ├── swipeNavigation.ts         # Mobile swipe navigation
 │   ├── tokenStore.ts              # Auth token storage (App#secretStorage)
 │   ├── errorMessage.ts            # Error-to-string helper
-│   ├── i18n.ts, locales/          # Localization strings
-│   └── generated/                 # Generated by protoc
-├── bin/protoc-gen-grpc-web        # Fetched by postinstall (too large for the repo)
+│   └── i18n.ts, locales/          # Localization strings
 ├── scripts/
-│   ├── fetch-protoc-gen-grpc-web.mjs  # Downloads bin/protoc-gen-grpc-web on npm install
-│   ├── gen-proto.mjs                  # Runs protoc, used by `npm run proto:gen`
-│   ├── ensure-generated.mjs           # Generates src/generated/ if missing (pre-dev/build/lint)
-│   └── version-bump.mjs               # Syncs manifest.json/versions.json, run by `npm version`
+│   └── version-bump.mjs           # Syncs manifest.json/versions.json, run by `npm version`
 ├── main.js                        # Generated by esbuild
-├── sync.proto                     # gRPC schema
 ├── manifest.json                  # Obsidian plugin manifest
 ├── versions.json                  # Plugin version → minAppVersion map
 └── esbuild.config.mjs             # Build configuration
