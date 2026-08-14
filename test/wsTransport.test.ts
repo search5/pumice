@@ -481,6 +481,66 @@ describe("WsSyncTransport request timeout", () => {
   });
 });
 
+describe("WsSyncTransport heartbeat/timeout during the init handshake", () => {
+  // Real bug found 2026-08-15 while investigating a user report of "Test connection" hanging
+  // forever with no success/failure feedback: main.ts only starts polling checkHeartbeat() on a
+  // window.setInterval *after* connect() resolves -- so if the server never responds to init (a
+  // dropped frame, a slow/overloaded server, anything), there was no timeout mechanism at all
+  // for that specific hang, unlike every request after it. See llm-wiki/11-*.md.
+  //
+  // The fix (main.ts) is to start polling checkHeartbeat() before awaiting connect(), not after
+  // -- which only works if checkHeartbeat() itself doesn't send a bare "ping" while init is still
+  // outstanding: the server rejects any op other than "init" with UNAUTHENTICATED before the
+  // handshake completes (see ws_sync_resource.py's handle_text_message), so a premature idle-ping
+  // would incorrectly fail the still-in-flight init with a misleading auth error instead of
+  // genuinely timing out. checkRequestTimeouts() (the 60s mechanism) must still apply to init.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("does not send an idle ping while init is still outstanding, even past the 10s idle threshold", () => {
+    const { transport, getWs } = makeTransport();
+    transport.connect("ws://x/ws", { token: "tok", vaultId: "v", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
+    const ws = getWs();
+    ws.simulateOpen();
+    ws.sent = []; // clear the init frame so we only look at what checkHeartbeat() itself sends
+
+    vi.advanceTimersByTime(15_000);
+    transport.checkHeartbeat();
+
+    expect(ws.jsonSent("ping")).toHaveLength(0);
+  });
+
+  it("still times out and rejects a connect() whose init never gets a response after 60s", async () => {
+    const { transport, getWs } = makeTransport();
+    const promise = transport.connect("ws://x/ws", { token: "tok", vaultId: "v", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
+    const ws = getWs();
+    ws.simulateOpen();
+    const onClose = vi.fn();
+    ws.onclose = onClose;
+
+    vi.advanceTimersByTime(65_000);
+    transport.checkHeartbeat();
+
+    await expect(promise).rejects.toThrow(/timed out/i);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("sends idle pings normally again once init has actually succeeded", async () => {
+    const { transport, ws } = await connectedTransport();
+    ws.sent = [];
+
+    vi.advanceTimersByTime(15_000);
+    transport.checkHeartbeat();
+
+    expect(ws.jsonSent("ping")).toHaveLength(1);
+  });
+});
+
 describe("WsSyncTransport connection close", () => {
   it("rejects the pending request", async () => {
     const { transport, ws } = await connectedTransport();

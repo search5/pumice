@@ -120,7 +120,6 @@ export const ko: Record<string, string> = {
     "이 vault는 폴더 이름(\"{{vaultName}}\")으로 서버에 식별됩니다 — 같은 vault를 동기화하는 모든 기기는 폴더 이름이 정확히 같아야 합니다.",
 
   "settings.heading-sync-target": "동기화 대상",
-  "settings.heading-auto-sync": "자동 동기화",
   "settings.heading-conflict-resolution": "충돌 해결",
   "settings.heading-security": "보안 (E2EE 암호화)",
   "settings.heading-local-snapshots": "로컬 스냅샷",
@@ -170,15 +169,6 @@ export const ko: Record<string, string> = {
   "settings.option-ignore-patterns": "제외 패턴",
   "settings.option-ignore-patterns-desc": "동기화에서 제외할 경로 (줄바꿈으로 구분, glob 지원)",
 
-  "settings.option-enable-auto-sync": "자동 동기화 활성화",
-  "settings.option-enable-auto-sync-desc": "주기적으로 자동 동기화를 실행합니다",
-  "settings.option-sync-interval": "동기화 주기 (초)",
-  "settings.option-sync-interval-desc": "자동 동기화 실행 간격 (최소 10초)",
-  "settings.option-sync-on-startup": "시작 시 동기화",
-  "settings.option-sync-on-startup-desc": "Obsidian 시작 시 자동으로 동기화를 실행합니다",
-  "settings.option-live-updates": "실시간 업데이트",
-  "settings.option-live-updates-desc":
-    "서버와 연결을 계속 유지해서, 다음 자동 동기화를 기다리지 않고 다른 기기의 변경사항이 몇 초 안에 반영되게 합니다. 이 연결이 조용히 끊길 경우를 대비해 자동 동기화도 함께 켜두는 걸 권장합니다.",
   "settings.status-live-connection": "연결 상태",
   "status.live-disabled": "실시간 업데이트 꺼짐",
   "status.live-connecting": "실시간 업데이트: 연결 중…",

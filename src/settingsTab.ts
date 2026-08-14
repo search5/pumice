@@ -101,6 +101,24 @@ export class SyncSettingTab extends PluginSettingTab {
               );
             },
           },
+          {
+            // No control -- a status line, not a setting. The plugin keeps a persistent
+            // connection open as soon as a token is configured, matching real Obsidian core Sync
+            // (see startLiveUpdatesIfNeeded's own comment in main.ts). This is the primary place
+            // to check the connection state: unlike the status bar (main.ts's statusBarItemEl),
+            // Obsidian mobile has no status bar visible by default, but the settings tab renders
+            // the same everywhere. Refreshed via settingTab.update() whenever main.ts's
+            // liveConnectionState changes (see setLiveConnectionState()).
+            name: t("settings.status-live-connection", "Connection status"),
+            visible: () => this.plugin.hasStoredToken,
+            render: (setting) => {
+              setting.settingEl.empty();
+              const { icon, labelKey, labelFallback } = describeLiveStatus(this.plugin.liveConnectionState);
+              const el = setting.settingEl.createEl("p", { cls: "setting-item-description pumice-live-status" });
+              setIcon(el.createSpan(), icon);
+              el.createSpan({ text: t(labelKey, labelFallback) });
+            },
+          },
         ],
       },
       {
@@ -145,52 +163,6 @@ export class SyncSettingTab extends PluginSettingTab {
               type: "textarea",
               key: "ignorePatterns",
               placeholder: `${this.app.vault.configDir}/workspace\n*.tmp`,
-            },
-          },
-        ],
-      },
-      {
-        type: "group",
-        heading: t("settings.heading-auto-sync", "Auto sync"),
-        items: [
-          {
-            name: t("settings.option-enable-auto-sync", "Enable auto sync"),
-            desc: t("settings.option-enable-auto-sync-desc", "Runs sync automatically on a schedule"),
-            control: { type: "toggle", key: "autoSync" },
-          },
-          {
-            name: t("settings.option-sync-interval", "Sync interval (seconds)"),
-            desc: t("settings.option-sync-interval-desc", "How often auto sync runs (minimum 10 seconds)"),
-            visible: () => this.plugin.settings.autoSync,
-            control: { type: "slider", key: "syncIntervalSeconds", min: 10, max: 3600, step: 10 },
-          },
-          {
-            name: t("settings.option-sync-on-startup", "Sync on startup"),
-            desc: t("settings.option-sync-on-startup-desc", "Runs sync automatically when Obsidian starts"),
-            control: { type: "toggle", key: "syncOnStartup" },
-          },
-          {
-            name: t("settings.option-live-updates", "Live updates"),
-            desc: t(
-              "settings.option-live-updates-desc",
-              "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently."
-            ),
-            control: { type: "toggle", key: "liveUpdates" },
-          },
-          {
-            // No control -- a status line, not a setting. This is the primary place to check the
-            // live-updates connection state: unlike the status bar (main.ts's statusBarItemEl),
-            // Obsidian mobile has no status bar visible by default, but the settings tab renders
-            // the same everywhere. Refreshed via settingTab.update() whenever main.ts's
-            // liveConnectionState changes (see setLiveConnectionState()).
-            name: t("settings.status-live-connection", "Connection status"),
-            visible: () => this.plugin.settings.liveUpdates,
-            render: (setting) => {
-              setting.settingEl.empty();
-              const { icon, labelKey, labelFallback } = describeLiveStatus(this.plugin.liveConnectionState);
-              const el = setting.settingEl.createEl("p", { cls: "setting-item-description pumice-live-status" });
-              setIcon(el.createSpan(), icon);
-              el.createSpan({ text: t(labelKey, labelFallback) });
             },
           },
         ],
@@ -342,6 +314,9 @@ export class SyncSettingTab extends PluginSettingTab {
         btn.onClick(async () => {
           await deleteToken(this.app);
           this.plugin.hasStoredToken = false;
+          // Drops the persistent connection right away instead of leaving it open (still
+          // authenticated under the now-deleted token) until it happens to drop on its own.
+          this.plugin.disconnectTransport();
           new Notice(t("settings.msg-token-deleted", "Token deleted"));
           onTokenChanged();
         });

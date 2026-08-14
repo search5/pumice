@@ -92,7 +92,6 @@ export default class SyncPlugin extends Plugin {
   // present (for esbuild.config.mjs), that resolves to Node's Timeout instead of the browser's
   // number -- but window.setInterval/setTimeout always return a number in the Electron/browser
   // renderer context a plugin actually runs in.
-  private autoSyncTimer: number | null = null;
   private debounceTimer: number | null = null;
   private ribbonReplaceTimers: number[] = [];
   // Paths the in-progress sync is currently writing to the vault itself -- shared with SyncClient
@@ -102,10 +101,10 @@ export default class SyncPlugin extends Plugin {
   // user having just edited it, so a sync that pulled anything down always queued a pointless
   // extra sync 3 seconds later.
   private selfWritePaths: Set<string> = new Set();
-  // Prevents overlapping syncNow() calls (manual click racing the debounce timer or the auto-sync
-  // interval, or two manual clicks in a row) from each computing their own independent Delta and
-  // stepping on each other -- a request to sync while one is already running is queued instead,
-  // and runs once the current one finishes.
+  // Prevents overlapping syncNow() calls (manual click racing the debounce timer or the
+  // safety-net's periodic sync, or two manual clicks in a row) from each computing their own
+  // independent Delta and stepping on each other -- a request to sync while one is already
+  // running is queued instead, and runs once the current one finishes.
   private isSyncing = false;
   private syncQueuedWhileRunning = false;
   // Set once in onunload() so an in-flight runLiveUpdateLoop() notices (between reads/retries)
@@ -129,8 +128,9 @@ export default class SyncPlugin extends Plugin {
   // onClose); getTransport() connects on demand and caches the result here.
   private wsTransport: WsSyncTransport | null = null;
   private wsHeartbeatTimer: number | null = null;
-  // Coalesces concurrent getTransport() callers (e.g. autoSync firing while a manual sync is
-  // still connecting) onto the same in-flight connect() instead of racing multiple sockets.
+  // Coalesces concurrent getTransport() callers (e.g. the live-update loop reconnecting while a
+  // manual sync is also trying to connect) onto the same in-flight connect() instead of racing
+  // multiple sockets.
   private wsConnecting: Promise<WsSyncTransport> | null = null;
   // Lets runLiveUpdateLoop await "this connection dropped" instead of polling -- resolved by
   // the onClose handler set up alongside wsTransport in getTransport().
@@ -160,6 +160,9 @@ export default class SyncPlugin extends Plugin {
           ? t("settings.msg-login-success-named", "Logged in as {{username}} — token saved.", { username: params.username })
           : t("settings.msg-login-success", "Logged in — token saved.")
       );
+      // Connect-once-configured (see startLiveUpdatesIfNeeded's own comment) -- starts the
+      // persistent connection immediately rather than waiting for the next syncNow()/app restart.
+      this.startLiveUpdatesIfNeeded();
       // The settings tab may already be open (that's usually how the user got to the "Log in"
       // button in the first place) and won't otherwise know the token changed underneath it --
       // refresh it so it reflects the new state instead of still showing the login prompt.
@@ -333,14 +336,6 @@ export default class SyncPlugin extends Plugin {
       })
     );
 
-    if (this.settings.syncOnStartup) {
-      this.app.workspace.onLayoutReady(() => this.syncNow());
-    }
-
-    if (this.settings.autoSync) {
-      this.startAutoSync();
-    }
-
     this.statusBarItemEl = this.addStatusBarItem();
     this.startLiveUpdatesIfNeeded();
 
@@ -455,11 +450,20 @@ export default class SyncPlugin extends Plugin {
           window.clearInterval(this.wsHeartbeatTimer);
           this.wsHeartbeatTimer = null;
         }
-        this.setLiveConnectionState(this.settings.liveUpdates ? "reconnecting" : "disabled");
+        this.setLiveConnectionState(this.hasStoredToken ? "reconnecting" : "disabled");
         this.wsClosedResolve?.();
         this.wsClosedResolve = null;
       });
       this.wsClosedPromise = new Promise((resolve) => (this.wsClosedResolve = resolve));
+      // Started *before* awaiting connect(), not after -- otherwise a server that never answers
+      // init (a dropped frame, an overloaded/stuck server) hangs this call forever with no way to
+      // detect it: checkHeartbeat()'s 60s checkRequestTimeouts() is the only timeout mechanism
+      // this transport has at all, and connect()'s init request needs that same protection every
+      // other request already gets. Safe to start this early because checkHeartbeat() itself
+      // knows not to send an idle ping before init succeeds (see wsTransport.ts's `authenticated`
+      // flag) -- a real bug found 2026-08-15 investigating a "Test connection does nothing" report;
+      // see llm-wiki/11-*.md.
+      this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
       await ws.connect(this.buildWsUrl(), {
         token,
         vaultId: this.app.vault.getName(),
@@ -468,7 +472,6 @@ export default class SyncPlugin extends Plugin {
         clientVersion: this.manifest.version,
         lastKnownChangeId: this.lastKnownChangeId,
       });
-      this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
       this.wsTransport = ws;
       this.setLiveConnectionState("connected");
       return ws;
@@ -481,7 +484,12 @@ export default class SyncPlugin extends Plugin {
     }
   }
 
-  private disconnectTransport(): void {
+  // Public: settingsTab.ts calls this directly when the stored token is deleted, so a logout
+  // drops the persistent connection immediately instead of leaving it open (still authenticated
+  // under the now-deleted token, from the server's perspective) until it happens to drop on its
+  // own -- runLiveUpdateLoop()'s own hasStoredToken check would eventually notice too, but only
+  // at its next reconnect/safety-net cycle, not right away.
+  disconnectTransport(): void {
     this.wsTransport?.close();
     this.wsTransport = null;
     if (this.wsHeartbeatTimer !== null) {
@@ -522,7 +530,6 @@ export default class SyncPlugin extends Plugin {
 
   onunload(): void {
     this.unloading = true;
-    this.stopAutoSync();
     this.disconnectTransport();
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
@@ -558,11 +565,9 @@ export default class SyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.savePluginData();
-    this.restartAutoSync();
-    // No "stop" call needed here the way autoSync has one: runLiveUpdateLoop() already checks
-    // this.settings.liveUpdates on every iteration and exits by itself once it's turned off.
-    // This only covers turning it *on* while the plugin is already running (there's no timer to
-    // arm the way autoSync has -- startLiveUpdatesIfNeeded() is a no-op if a loop is already up).
+    // A no-op whenever a live-update loop is already up (startLiveUpdatesIfNeeded()'s own
+    // guard) -- this only matters right after a token is saved/deleted while the plugin is
+    // already running, since hasStoredToken can change without a fresh onload().
     this.startLiveUpdatesIfNeeded();
   }
 
@@ -606,11 +611,11 @@ export default class SyncPlugin extends Plugin {
   }
 
   async syncNow(): Promise<void> {
-    // A sync already in flight (manual click racing the debounce timer / auto-sync interval, or
-    // two triggers in quick succession) is not started a second time in parallel -- each one would
-    // compute its own independent Delta and step on the other's writes. Instead this request is
-    // queued and runs once, right after the current one finishes, so concurrent client/server
-    // changes still converge without the user needing to notice and retry manually.
+    // A sync already in flight (manual click racing the debounce timer / safety-net's periodic
+    // sync, or two triggers in quick succession) is not started a second time in parallel --
+    // each one would compute its own independent Delta and step on the other's writes. Instead
+    // this request is queued and runs once, right after the current one finishes, so concurrent
+    // client/server changes still converge without the user needing to notice and retry manually.
     if (this.isSyncing) {
       this.logDebug("Sync already in progress -- queuing this request to run once it finishes");
       this.syncQueuedWhileRunning = true;
@@ -756,29 +761,16 @@ export default class SyncPlugin extends Plugin {
     }
   }
 
-  private startAutoSync(): void {
-    if (this.autoSyncTimer) return;
-    const ms = this.settings.syncIntervalSeconds * 1000;
-    this.autoSyncTimer = window.setInterval(() => void this.syncNow(), ms);
-  }
-
-  private stopAutoSync(): void {
-    if (this.autoSyncTimer) {
-      window.clearInterval(this.autoSyncTimer);
-      this.autoSyncTimer = null;
-    }
-  }
-
-  private restartAutoSync(): void {
-    this.stopAutoSync();
-    if (this.settings.autoSync) {
-      this.startAutoSync();
-    }
-  }
-
+  // Connect-once-configured, matching real Obsidian core Sync (confirmed via obsidian.asar
+  // analysis, #14_옵시디언싱크_정렬_구현계획.md): there's no separate opt-in flag for a
+  // persistent connection, no user-configurable sync interval, and no "sync on startup" toggle
+  // either -- as soon as a token exists, the plugin keeps one open for as long as it stays
+  // loaded, and waitForCloseOrSafetyNet()'s own periodic full sync (below) is what core's fixed
+  // 30s requestSync interval already covers, replacing the old opt-in autoSync timer entirely.
+  // The manual "Sync now" button/ribbon icon stays as a force-trigger -- not replaced by this.
   private startLiveUpdatesIfNeeded(): void {
-    if (this.liveUpdatesLoopRunning || !this.settings.liveUpdates) {
-      if (!this.settings.liveUpdates) this.setLiveConnectionState("disabled");
+    if (this.liveUpdatesLoopRunning || !this.hasStoredToken) {
+      if (!this.hasStoredToken) this.setLiveConnectionState("disabled");
       return;
     }
     this.liveUpdatesLoopRunning = true;
@@ -801,15 +793,15 @@ export default class SyncPlugin extends Plugin {
   private renderLiveStatusBar(): void {
     if (!this.statusBarItemEl) return;
     this.statusBarItemEl.empty();
-    if (!this.settings.liveUpdates) return;
+    if (!this.hasStoredToken) return;
     const { icon, labelKey, labelFallback } = describeLiveStatus(this.liveConnectionState);
     this.statusBarItemEl.addClass("pumice-live-status");
     setIcon(this.statusBarItemEl.createSpan(), icon);
     this.statusBarItemEl.createSpan({ text: t(labelKey, labelFallback) });
   }
 
-  // Keeps the shared WS transport (see wsTransport field) connected for as long as liveUpdates
-  // stays on, reconnecting with exponential backoff (+ jitter, see below) on any error.
+  // Keeps the shared WS transport (see wsTransport field) connected for as long as a token stays
+  // configured, reconnecting with exponential backoff (+ jitter, see below) on any error.
   // getTransport() itself does the actual connect + wires onChangePush()/starts the heartbeat --
   // this loop's job is noticing a drop (via wsClosedPromise) and re-establishing it, and
   // separately forcing a periodic sync as a safety net against a lost push notification (see
@@ -821,7 +813,7 @@ export default class SyncPlugin extends Plugin {
     const MAX_BACKOFF_MS = 60000;
     let backoffMs = INITIAL_BACKOFF_MS;
 
-    while (this.settings.liveUpdates && !this.unloading) {
+    while (this.hasStoredToken && !this.unloading) {
       try {
         this.setLiveConnectionState("connecting");
         await this.getTransport();
@@ -846,11 +838,11 @@ export default class SyncPlugin extends Plugin {
   // LIVE_SYNC_SAFETY_NET_INTERVAL_MS while it stays up, forces a full sync regardless of
   // whether a push notification actually arrived. Mirrors Obsidian core's own Sync client
   // (`window.setInterval(this.requestSync.bind(this), 3e4)`, confirmed via obsidian.asar
-  // v1.13.6 -- see #14_옵시디언싱크_정렬_구현계획.md): without this, a lost/dropped push would
-  // go unnoticed until the next manual sync or autoSync tick, and autoSync defaults to *off*
-  // (see settings.ts), so today there is effectively no safety net at all. Runs a full syncNow()
-  // rather than a cheaper incremental catch-up because pumice has no version-journal endpoint
-  // yet (see #14's "저널 기반" section) -- this'll get cheaper once that lands.
+  // v1.13.6 -- see #14_옵시디언싱크_정렬_구현계획.md): without this, a lost/dropped push would go
+  // unnoticed until the next manual sync -- this *is* pumice's periodic-resync mechanism now
+  // (the old opt-in autoSync timer was removed, see settings.ts). Runs a full syncNow() rather
+  // than a cheaper incremental catch-up because pumice has no version-journal endpoint yet (see
+  // #14's "저널 기반" section) -- this'll get cheaper once that lands.
   private async waitForCloseOrSafetyNet(): Promise<void> {
     while (this.wsClosedPromise) {
       const closedPromise = this.wsClosedPromise;
@@ -913,7 +905,11 @@ export default class SyncPlugin extends Plugin {
   }
 
   triggerDebouncedSync(): void {
-    if (!this.settings.autoSync) return;
+    // Guards on a token being configured at all, not a removed "autoSync" opt-in flag -- prompt
+    // upload of local edits is always on now (matching real Obsidian core, see
+    // startLiveUpdatesIfNeeded's own comment), this just avoids spamming a "No sync token is
+    // set" notice on every edit before the user has ever logged in.
+    if (!this.hasStoredToken) return;
 
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);

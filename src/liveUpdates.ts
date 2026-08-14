@@ -50,7 +50,8 @@ export function applyJitter(ms: number, randomFn: () => number = Math.random): n
 // How often runLiveUpdateLoop forces a sync while the live connection is up, independent of
 // whether a push notification actually arrived -- mirrors Obsidian core's own Sync client
 // (`window.setInterval(this.requestSync.bind(this), 3e4)`, confirmed via obsidian.asar v1.13.6,
-// see #14_옵시디언싱크_정렬_구현계획.md). Without this, a lost/dropped push notification would
-// go unnoticed until the next manual sync or autoSync tick -- and autoSync defaults to *off*
-// (see settings.ts), so today there is effectively no safety net at all.
+// see #14_옵시디언싱크_정렬_구현계획.md). This is pumice's only periodic re-sync mechanism now
+// (the old opt-in autoSync timer, and syncOnStartup with it, were both removed as redundant --
+// see settings.ts) -- without it, a lost/dropped push notification would go unnoticed until the
+// next manual sync.
 export const LIVE_SYNC_SAFETY_NET_INTERVAL_MS = 30_000;

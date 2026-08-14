@@ -39,15 +39,6 @@ export interface SyncPluginSettings {
   syncPluginData: boolean;
   ignorePatterns: string;
 
-  autoSync: boolean;
-  syncIntervalSeconds: number;
-  syncOnStartup: boolean;
-  // Opens a long-lived SSE connection (GET /watch) so the server can push "something changed"
-  // instead of waiting for the next autoSync tick -- see #10_실시간_변경_알림_구현_계획.md. Off by
-  // default like syncPlugins: a new persistent-connection behavior, not just a config tweak.
-  // Doesn't replace autoSync, which stays meaningful as a fallback if this connection dies quietly.
-  liveUpdates: boolean;
-
   conflictResolution: ConflictResolution;
 
   // The password itself lives in app.secretStorage (see tokenStore.ts), never in data.json.
@@ -85,11 +76,6 @@ export function getDefaultSettings(configDir: string): SyncPluginSettings {
     syncPlugins: false,
     syncPluginData: false,
     ignorePatterns: defaultExcludePatterns,
-
-    autoSync: false,
-    syncIntervalSeconds: 60,
-    syncOnStartup: false,
-    liveUpdates: false,
 
     conflictResolution: "merge",
 

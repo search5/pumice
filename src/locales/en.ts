@@ -122,7 +122,6 @@ export const en: Record<string, string> = {
     "This vault is identified to the server by its folder name (\"{{vaultName}}\") — every device syncing this same vault must use a folder with the exact same name.",
 
   "settings.heading-sync-target": "Sync target",
-  "settings.heading-auto-sync": "Auto sync",
   "settings.heading-conflict-resolution": "Conflict resolution",
   "settings.heading-security": "Security (E2EE encryption)",
   "settings.heading-local-snapshots": "Local snapshots",
@@ -172,15 +171,6 @@ export const en: Record<string, string> = {
   "settings.option-ignore-patterns": "Ignore patterns",
   "settings.option-ignore-patterns-desc": "Paths to exclude from sync (one per line, glob supported)",
 
-  "settings.option-enable-auto-sync": "Enable auto sync",
-  "settings.option-enable-auto-sync-desc": "Runs sync automatically on a schedule",
-  "settings.option-sync-interval": "Sync interval (seconds)",
-  "settings.option-sync-interval-desc": "How often auto sync runs (minimum 10 seconds)",
-  "settings.option-sync-on-startup": "Sync on startup",
-  "settings.option-sync-on-startup-desc": "Runs sync automatically when Obsidian starts",
-  "settings.option-live-updates": "Live updates",
-  "settings.option-live-updates-desc":
-    "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently.",
   "settings.status-live-connection": "Connection status",
   "status.live-disabled": "Live updates off",
   "status.live-connecting": "Live updates: connecting…",

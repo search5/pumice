@@ -134,6 +134,14 @@ export class WsSyncTransport {
   private pending: Pending | null = null;
   private queue: QueuedRequest[] = [];
 
+  // False until init_ok is received. The server rejects any op other than "init" with
+  // UNAUTHENTICATED before the handshake completes (see ws_sync_resource.py's
+  // handle_text_message) -- checkHeartbeat()'s idle-ping must not fire while this is false, or a
+  // slow-to-respond init (still legitimately pending, well within its own 60s
+  // checkRequestTimeouts() budget) would get incorrectly rejected with a misleading auth error
+  // instead of either succeeding or genuinely timing out. See llm-wiki/11-*.md.
+  private authenticated = false;
+
   private lastMessageTs = 0;
   private onPush?: (file: PushedFileChangeMeta) => void;
   private onReadyCb?: (payload: ReadyPayload) => void;
@@ -175,6 +183,7 @@ export class WsSyncTransport {
           kind: "unary",
           resolve: (payload) => {
             this.releaseSlot();
+            this.authenticated = true;
             resolve(payload as InitOkPayload);
           },
           reject: (e) => {
@@ -372,6 +381,7 @@ export class WsSyncTransport {
   }
 
   private handleClose(): void {
+    this.authenticated = false;
     const err = new Error("WebSocket connection closed");
     // Snapshot and clear both before rejecting anything: `pending.reject` is wrapped with
     // releaseSlot() (see request()/requestStream()/pushFile() above), which would otherwise
@@ -403,7 +413,7 @@ export class WsSyncTransport {
     if (idleMs > DISCONNECT_AFTER_IDLE_MS) {
       this.close();
       return;
-    } else if (idleMs > PING_AFTER_IDLE_MS) {
+    } else if (this.authenticated && idleMs > PING_AFTER_IDLE_MS) {
       this.sendJson({ op: "ping", payload: {} });
     }
     this.checkRequestTimeouts();
