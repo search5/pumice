@@ -1,4 +1,4 @@
-import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon } from "obsidian";
+import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon, setTooltip } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
@@ -106,6 +106,13 @@ export default class SyncPlugin extends Plugin {
   // independent Delta and stepping on each other -- a request to sync while one is already
   // running is queued instead, and runs once the current one finishes.
   private isSyncing = false;
+  // Mirrors real Obsidian core Sync's own persistent error indicator (this.error/fileRetry in
+  // its SyncStore) -- true once a sync attempt either threw or finished with files still failing
+  // after in-sync retries, cleared again only by a subsequent sync that completes clean. Read by
+  // setIdleStatus() so the status bar keeps showing "error" through reconnects/idle periods
+  // instead of quietly reverting to "synced" the moment the connection itself recovers. See
+  // llm-wiki/12-*.md.
+  private lastSyncFailed = false;
   // null = nothing queued. Otherwise, whether the queued request should stay silent (see
   // syncNow's own `silent` param) -- if any queued attempt wants Notices shown, this ends up
   // false, so a manual click never gets silently swallowed just because an automatic sync
@@ -454,7 +461,9 @@ export default class SyncPlugin extends Plugin {
           window.clearInterval(this.wsHeartbeatTimer);
           this.wsHeartbeatTimer = null;
         }
-        this.setLiveConnectionState(this.hasStoredToken ? "reconnecting" : "disabled");
+        // Real core doesn't visually distinguish "reconnecting" from a fresh connection attempt
+        // either -- both just show its "syncing" state with a "Connecting to server" tooltip.
+        this.setLiveConnectionState(this.hasStoredToken ? "connecting" : "disabled");
         this.wsClosedResolve?.();
         this.wsClosedResolve = null;
       });
@@ -477,7 +486,7 @@ export default class SyncPlugin extends Plugin {
         lastKnownChangeId: this.lastKnownChangeId,
       });
       this.wsTransport = ws;
-      this.setLiveConnectionState("connected");
+      this.setIdleStatus();
       return ws;
     })();
 
@@ -635,7 +644,11 @@ export default class SyncPlugin extends Plugin {
       this.syncQueuedSilent = this.syncQueuedSilent === false ? false : silent;
       return;
     }
-    this.isSyncing = true;
+    this.setSyncActivity(true);
+    // Whether this attempt should count toward lastSyncFailed once activity turns back off --
+    // defaults to false so an early return before a real attempt (e.g. no token configured yet)
+    // doesn't count as a failure; set for real inside the actual sync attempt below.
+    let failed = false;
     try {
       const token = await this.getToken();
       if (!token) {
@@ -686,6 +699,7 @@ export default class SyncPlugin extends Plugin {
         );
 
         const result = await client.sync();
+        failed = result.failed > 0;
         progressNotice?.hide();
         if (!silent) {
           new Notice(
@@ -704,13 +718,14 @@ export default class SyncPlugin extends Plugin {
         }
         await this.reloadUpdatedPlugins(result.updatedPluginIds);
       } catch (e: unknown) {
+        failed = true;
         progressNotice?.hide();
         console.error("Sync failed:", e);
         this.syncDiagnosticsLog.log("warn", `Sync failed: ${errorMessage(e)}`);
         if (!silent) new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
       }
     } finally {
-      this.isSyncing = false;
+      this.setSyncActivity(false, failed);
       if (this.syncQueuedSilent !== null) {
         const queuedSilent = this.syncQueuedSilent;
         this.syncQueuedSilent = null;
@@ -737,7 +752,8 @@ export default class SyncPlugin extends Plugin {
     const token = await this.getToken();
     if (!token) return;
 
-    this.isSyncing = true;
+    this.setSyncActivity(true);
+    let failed = false;
     try {
       const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
       const transport = await this.getTransport();
@@ -768,9 +784,13 @@ export default class SyncPlugin extends Plugin {
         is_deleted: file.isDeleted,
       });
     } catch (e: unknown) {
+      failed = true;
       console.error(`Failed to apply pushed change for ${file.path}:`, e);
     } finally {
-      this.isSyncing = false;
+      // Success doesn't pass `failed` here (see setSyncActivity's own comment) -- applying one
+      // pushed file cleanly says nothing about whether some other already-flagged sync failure
+      // is now resolved.
+      this.setSyncActivity(false, failed ? true : undefined);
       if (this.syncQueuedSilent !== null) {
         const queuedSilent = this.syncQueuedSilent;
         this.syncQueuedSilent = null;
@@ -809,14 +829,52 @@ export default class SyncPlugin extends Plugin {
     this.settingTab.update();
   }
 
+  // The "resting" state once whatever's currently in flight (a connection attempt, an active
+  // sync) settles -- real Obsidian core Sync's own status model checks its persistent error flag
+  // BEFORE deciding "synced" (see liveStatus.ts's own comment for the exact precedence, taken
+  // straight from the shipped app), so a lingering sync failure keeps showing "error" through a
+  // connection drop/reconnect cycle instead of quietly reverting to "synced" just because the
+  // socket itself recovered.
+  private setIdleStatus(): void {
+    if (!this.hasStoredToken) {
+      this.setLiveConnectionState("disabled");
+      return;
+    }
+    this.setLiveConnectionState(this.lastSyncFailed ? "error" : "synced");
+  }
+
+  // Wraps every isSyncing mutation (previously a bare `this.isSyncing = ...`) so the status
+  // indicator reacts to actual sync activity, not just connection health -- matching real
+  // Obsidian core Sync's own status bar, which reflects sync operations in progress rather than
+  // socket state. `failed` (only meaningful when turning activity off) feeds lastSyncFailed,
+  // mirroring core's own persistent per-file error tracking closely enough for pumice's simpler
+  // model: true if this sync attempt threw entirely or finished with files still failing after
+  // in-sync retries, false (clearing any earlier failure) only on a fully clean sync.
+  // `failed` left undefined (rather than explicitly false) leaves lastSyncFailed untouched --
+  // used by applyPushedFileChange's own single-file apply below, whose success doesn't confirm
+  // some OTHER already-flagged failure from a prior full sync is actually resolved.
+  private setSyncActivity(active: boolean, failed?: boolean): void {
+    this.isSyncing = active;
+    if (active) {
+      this.setLiveConnectionState("syncing");
+      return;
+    }
+    if (failed !== undefined) this.lastSyncFailed = failed;
+    this.setIdleStatus();
+  }
+
+  // Real Obsidian core Sync's status bar is icon-only, with the detailed text as a hover
+  // tooltip (setTooltip) rather than inline -- confirmed via the shipped app's own
+  // _updateStatusBar(), see llm-wiki/12-*.md. The settings tab's "Connection status" line stays
+  // inline text (see its own comment for why: Obsidian mobile has no status bar by default).
   private renderLiveStatusBar(): void {
     if (!this.statusBarItemEl) return;
     this.statusBarItemEl.empty();
     if (!this.hasStoredToken) return;
     const { icon, labelKey, labelFallback } = describeLiveStatus(this.liveConnectionState);
     this.statusBarItemEl.addClass("pumice-live-status");
-    setIcon(this.statusBarItemEl.createSpan(), icon);
-    this.statusBarItemEl.createSpan({ text: t(labelKey, labelFallback) });
+    setIcon(this.statusBarItemEl, icon);
+    setTooltip(this.statusBarItemEl, t(labelKey, labelFallback), { placement: "top" });
   }
 
   // Keeps the shared WS transport (see wsTransport field) connected for as long as a token stays
@@ -840,7 +898,7 @@ export default class SyncPlugin extends Plugin {
 
         await this.waitForCloseOrSafetyNet();
       } catch (e: unknown) {
-        this.setLiveConnectionState("reconnecting");
+        this.setLiveConnectionState("connecting");
         // Obsidian core's own reconnect backoff applies ±50% jitter to each attempt's delay
         // (see #14_옵시디언싱크_정렬_구현계획.md) so many clients dropped by the same event (a
         // server restart) don't all retry in lockstep -- backoffMs itself stays a clean

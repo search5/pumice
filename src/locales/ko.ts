@@ -170,10 +170,11 @@ export const ko: Record<string, string> = {
   "settings.option-ignore-patterns-desc": "동기화에서 제외할 경로 (줄바꿈으로 구분, glob 지원)",
 
   "settings.status-live-connection": "연결 상태",
-  "status.live-disabled": "실시간 업데이트 꺼짐",
-  "status.live-connecting": "실시간 업데이트: 연결 중…",
-  "status.live-connected": "실시간 업데이트: 연결됨",
-  "status.live-reconnecting": "실시간 업데이트: 재연결 시도 중…",
+  "status.live-disabled": "동기화 꺼짐",
+  "status.connecting": "서버에 연결 중…",
+  "status.syncing": "동기화 중…",
+  "status.synced": "동기화 완료",
+  "status.sync-error": "동기화 오류",
 
   "settings.option-conflict-resolution": "충돌 해결 방식",
   "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법",

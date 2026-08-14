@@ -172,10 +172,11 @@ export const en: Record<string, string> = {
   "settings.option-ignore-patterns-desc": "Paths to exclude from sync (one per line, glob supported)",
 
   "settings.status-live-connection": "Connection status",
-  "status.live-disabled": "Live updates off",
-  "status.live-connecting": "Live updates: connecting…",
-  "status.live-connected": "Live updates: connected",
-  "status.live-reconnecting": "Live updates: reconnecting…",
+  "status.live-disabled": "Sync disabled",
+  "status.connecting": "Connecting to server…",
+  "status.syncing": "Syncing…",
+  "status.synced": "Fully synced",
+  "status.sync-error": "Sync error",
 
   "settings.option-conflict-resolution": "Conflict resolution method",
   "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files",
