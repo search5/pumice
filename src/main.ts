@@ -106,7 +106,11 @@ export default class SyncPlugin extends Plugin {
   // independent Delta and stepping on each other -- a request to sync while one is already
   // running is queued instead, and runs once the current one finishes.
   private isSyncing = false;
-  private syncQueuedWhileRunning = false;
+  // null = nothing queued. Otherwise, whether the queued request should stay silent (see
+  // syncNow's own `silent` param) -- if any queued attempt wants Notices shown, this ends up
+  // false, so a manual click never gets silently swallowed just because an automatic sync
+  // happened to already be queued in front of it.
+  private syncQueuedSilent: boolean | null = null;
   // Set once in onunload() so an in-flight runLiveUpdateLoop() notices (between reads/retries)
   // and stops re-looping, instead of holding the plugin process open forever.
   private unloading = false;
@@ -610,7 +614,16 @@ export default class SyncPlugin extends Plugin {
     await client.testConnection();
   }
 
-  async syncNow(): Promise<void> {
+  // `silent` suppresses every Notice this method would otherwise show (starting/progress/
+  // complete/failed/no-token), matching real Obsidian core Sync's own quiet background
+  // behavior -- it never pops a toast for a routine automatic sync, only reflecting state via
+  // its status indicator (pumice's equivalent: liveConnectionState / the settings tab's
+  // "Connection status" line). Pass true from every automatic call site (the 30s safety net,
+  // the debounced-local-edit trigger, and the queued-retrigger below) and leave it false for the
+  // two genuinely interactive ones (the ribbon icon and the command palette action), where the
+  // user is actively waiting for feedback. Failures are still logged to syncDiagnosticsLog
+  // either way, just without an interrupting popup when silent.
+  async syncNow(silent = false): Promise<void> {
     // A sync already in flight (manual click racing the debounce timer / safety-net's periodic
     // sync, or two triggers in quick succession) is not started a second time in parallel --
     // each one would compute its own independent Delta and step on the other's writes. Instead
@@ -618,14 +631,15 @@ export default class SyncPlugin extends Plugin {
     // client/server changes still converge without the user needing to notice and retry manually.
     if (this.isSyncing) {
       this.logDebug("Sync already in progress -- queuing this request to run once it finishes");
-      this.syncQueuedWhileRunning = true;
+      // Prefer non-silent if anything queued so far wanted Notices -- see syncQueuedSilent's own comment.
+      this.syncQueuedSilent = this.syncQueuedSilent === false ? false : silent;
       return;
     }
     this.isSyncing = true;
     try {
       const token = await this.getToken();
       if (!token) {
-        new Notice(t("settings.msg-no-token", "No sync token is set."));
+        if (!silent) new Notice(t("settings.msg-no-token", "No sync token is set."));
         return;
       }
 
@@ -636,7 +650,7 @@ export default class SyncPlugin extends Plugin {
       };
       // duration=0 keeps this Notice open until hide() is called below, so it can be updated in
       // place as progress comes in instead of the old fire-and-forget start/end Notice pair.
-      const progressNotice = new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
+      const progressNotice = silent ? null : new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
 
       try {
         const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
@@ -655,11 +669,11 @@ export default class SyncPlugin extends Plugin {
           },
           this.contentHashCache,
           ({ phase, done, total }) => {
-            progressNotice.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
+            progressNotice?.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
           },
           ({ delayMs, retriesLeft }) => {
             // Reuses the same progressNotice instead of popping up a separate toast on top of it.
-            progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
+            progressNotice?.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
           },
           this.selfWritePaths,
           (level, message) => this.syncDiagnosticsLog.log(level, message),
@@ -672,32 +686,36 @@ export default class SyncPlugin extends Plugin {
         );
 
         const result = await client.sync();
-        progressNotice.hide();
-        new Notice(
-          result.failed > 0
-            ? t(
-                "settings.msg-sync-complete-with-failed",
-                "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted, {{failed}} failed after retrying",
-                { uploaded: result.uploaded, downloaded: result.downloaded, deleted: result.deleted, failed: result.failed }
-              )
-            : t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
-                uploaded: result.uploaded,
-                downloaded: result.downloaded,
-                deleted: result.deleted,
-              })
-        );
+        progressNotice?.hide();
+        if (!silent) {
+          new Notice(
+            result.failed > 0
+              ? t(
+                  "settings.msg-sync-complete-with-failed",
+                  "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted, {{failed}} failed after retrying",
+                  { uploaded: result.uploaded, downloaded: result.downloaded, deleted: result.deleted, failed: result.failed }
+                )
+              : t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
+                  uploaded: result.uploaded,
+                  downloaded: result.downloaded,
+                  deleted: result.deleted,
+                })
+          );
+        }
         await this.reloadUpdatedPlugins(result.updatedPluginIds);
       } catch (e: unknown) {
-        progressNotice.hide();
+        progressNotice?.hide();
         console.error("Sync failed:", e);
-        new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
+        this.syncDiagnosticsLog.log("warn", `Sync failed: ${errorMessage(e)}`);
+        if (!silent) new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
       }
     } finally {
       this.isSyncing = false;
-      if (this.syncQueuedWhileRunning) {
-        this.syncQueuedWhileRunning = false;
+      if (this.syncQueuedSilent !== null) {
+        const queuedSilent = this.syncQueuedSilent;
+        this.syncQueuedSilent = null;
         this.logDebug("Running the sync that was queued while the previous one was in progress");
-        void this.syncNow();
+        void this.syncNow(queuedSilent);
       }
     }
   }
@@ -706,7 +724,7 @@ export default class SyncPlugin extends Plugin {
   // llm-wiki/03-*.md): applies exactly the one file a `push` notification named, instead of
   // running a full syncNow()/Delta for every remote change no matter how much actually changed
   // (matching real Obsidian Sync's per-file push). Shares syncNow()'s isSyncing/
-  // syncQueuedWhileRunning mutex -- if a full sync is already running, this is skipped rather
+  // syncQueuedSilent mutex -- if a full sync is already running, this is skipped rather
   // than risking two independent SyncClient instances writing the same path at once (writeSelfPath's
   // selfWritePaths set is shared plugin-wide); the in-flight (or queued-right-after) full sync's
   // own Delta will pick this exact file up anyway, since the server just told every connected
@@ -753,10 +771,11 @@ export default class SyncPlugin extends Plugin {
       console.error(`Failed to apply pushed change for ${file.path}:`, e);
     } finally {
       this.isSyncing = false;
-      if (this.syncQueuedWhileRunning) {
-        this.syncQueuedWhileRunning = false;
+      if (this.syncQueuedSilent !== null) {
+        const queuedSilent = this.syncQueuedSilent;
+        this.syncQueuedSilent = null;
         this.logDebug("Running the sync that was queued while a pushed change was being applied");
-        void this.syncNow();
+        void this.syncNow(queuedSilent);
       }
     }
   }
@@ -853,7 +872,7 @@ export default class SyncPlugin extends Plugin {
       ]);
       if (winner === "closed") return;
       this.logDebug("Live sync safety net: forcing a sync regardless of push activity");
-      void this.syncNow();
+      void this.syncNow(true);
     }
   }
 
@@ -916,7 +935,7 @@ export default class SyncPlugin extends Plugin {
     }
 
     this.debounceTimer = window.setTimeout(() => {
-      void this.syncNow();
+      void this.syncNow(true);
     }, 3000); // run after a 3-second debounce delay
   }
 
