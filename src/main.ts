@@ -15,7 +15,7 @@ import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { nextBackoffMs } from "./liveUpdates";
+import { applyJitter, LIVE_SYNC_SAFETY_NET_INTERVAL_MS, nextBackoffMs } from "./liveUpdates";
 import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
@@ -26,6 +26,7 @@ interface PersistedPluginData {
   settings?: Partial<SyncPluginSettings>;
   deletedFiles?: Record<string, number>;
   lastKnownPluginPaths?: Record<string, number>;
+  lastKnownChangeId?: number;
 }
 
 // The "Vault Sync" ribbon button has no core equivalent, so there's no core translation key for
@@ -73,6 +74,15 @@ export default class SyncPlugin extends Plugin {
   // ignorePatterns) -- diffed against the current listing each sync to detect plugin removals,
   // since vault.on("delete", ...) never fires for config-dir paths. See #7_플러그인_동기화_구현_계획.md.
   lastKnownPluginPaths: Record<string, number> = {};
+  // Version catch-up baseline (PR2/PR3 of #14_옵시디언싱크_정렬_구현계획.md) -- the
+  // vault_change_log change_id this device last caught up to on the server, sent back in every
+  // init so a reconnect only needs to replay what changed since then (via a catch-up `push`
+  // burst) instead of a full delta_req scan. 0 means "no baseline yet" (brand-new device or
+  // first sync ever), which the server takes as a signal to skip the catch-up burst entirely.
+  // A single scalar, unlike lastSyncedHashStore/contentHashCache (per-path, IndexedDB-backed) --
+  // this is one number per vault, so it rides along with the plugin's existing data.json
+  // persistence (savePluginData()) rather than warranting a whole separate store.
+  lastKnownChangeId = 0;
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
   lastSyncedHashStore!: LastSyncedHashStore;
@@ -428,14 +438,17 @@ export default class SyncPlugin extends Plugin {
 
     this.wsConnecting = (async () => {
       const ws = new WsSyncTransport((url) => new WebSocket(url));
-      await ws.connect(this.buildWsUrl(), {
-        token,
-        vaultId: this.app.vault.getName(),
-        deviceName: this.settings.deviceName || "",
-        userName: this.settings.userName || "",
-        clientVersion: this.manifest.version,
-      });
+      // Registered *before* connect() resolves, not after -- a catch-up push burst (PR2 of
+      // #14_옵시디언싱크_정렬_구현계획.md) can arrive on the wire immediately once init_ok is
+      // sent, and registering these callbacks only once `await ws.connect(...)` returns left a
+      // real gap where an early push/ready could be silently dropped (found while designing
+      // PR3 -- not previously exploitable in practice since a live push landing in that exact
+      // window was rare, but the catch-up burst makes it routine).
       ws.onChangePush((file) => void this.applyPushedChange(file));
+      ws.onReady((payload) => {
+        this.lastKnownChangeId = payload.latestChangeId;
+        void this.savePluginData();
+      });
       ws.onClose(() => {
         if (this.wsTransport === ws) this.wsTransport = null;
         if (this.wsHeartbeatTimer !== null) {
@@ -447,6 +460,14 @@ export default class SyncPlugin extends Plugin {
         this.wsClosedResolve = null;
       });
       this.wsClosedPromise = new Promise((resolve) => (this.wsClosedResolve = resolve));
+      await ws.connect(this.buildWsUrl(), {
+        token,
+        vaultId: this.app.vault.getName(),
+        deviceName: this.settings.deviceName || "",
+        userName: this.settings.userName || "",
+        clientVersion: this.manifest.version,
+        lastKnownChangeId: this.lastKnownChangeId,
+      });
       this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
       this.wsTransport = ws;
       this.setLiveConnectionState("connected");
@@ -519,6 +540,7 @@ export default class SyncPlugin extends Plugin {
     this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
     this.deletedFiles = data.deletedFiles || {};
     this.lastKnownPluginPaths = data.lastKnownPluginPaths || {};
+    this.lastKnownChangeId = data.lastKnownChangeId || 0;
 
     // One-time migration: e2eePassword used to be persisted in plaintext here. Move any leftover
     // value into secretStorage (same treatment as the auth token in tokenStore.ts) and never write
@@ -549,6 +571,7 @@ export default class SyncPlugin extends Plugin {
       settings: this.settings,
       deletedFiles: this.deletedFiles,
       lastKnownPluginPaths: this.lastKnownPluginPaths,
+      lastKnownChangeId: this.lastKnownChangeId,
     });
   }
 
@@ -786,11 +809,13 @@ export default class SyncPlugin extends Plugin {
   }
 
   // Keeps the shared WS transport (see wsTransport field) connected for as long as liveUpdates
-  // stays on, reconnecting with exponential backoff on any error. getTransport() itself does the
-  // actual connect + wires onChangePush(() => syncNow()) + starts the heartbeat -- this loop's
-  // job is just noticing a drop (via wsClosedPromise) and re-establishing it. Formerly a GET
-  // /watch SSE connection (see #10_실시간_변경_알림_구현_계획.md); replaced by the same WS
-  // connection syncNow()/testConnection() already use, per #11_websocket_동기화_프로토콜_설계.md.
+  // stays on, reconnecting with exponential backoff (+ jitter, see below) on any error.
+  // getTransport() itself does the actual connect + wires onChangePush()/starts the heartbeat --
+  // this loop's job is noticing a drop (via wsClosedPromise) and re-establishing it, and
+  // separately forcing a periodic sync as a safety net against a lost push notification (see
+  // waitForCloseOrSafetyNet()). Formerly a GET /watch SSE connection (see
+  // #10_실시간_변경_알림_구현_계획.md); replaced by the same WS connection
+  // syncNow()/testConnection() already use, per #11_websocket_동기화_프로토콜_설계.md.
   private async runLiveUpdateLoop(): Promise<void> {
     const INITIAL_BACKOFF_MS = 1000;
     const MAX_BACKOFF_MS = 60000;
@@ -802,15 +827,41 @@ export default class SyncPlugin extends Plugin {
         await this.getTransport();
         backoffMs = INITIAL_BACKOFF_MS;
 
-        // Waits until this connection drops (getTransport()'s onClose handler resolves this and
-        // updates liveConnectionState) before looping around to reconnect.
-        if (this.wsClosedPromise) await this.wsClosedPromise;
+        await this.waitForCloseOrSafetyNet();
       } catch (e: unknown) {
         this.setLiveConnectionState("reconnecting");
-        this.logDebug(`Live update connection error, retrying in ${backoffMs}ms: ${errorMessage(e)}`);
-        await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+        // Obsidian core's own reconnect backoff applies ±50% jitter to each attempt's delay
+        // (see #14_옵시디언싱크_정렬_구현계획.md) so many clients dropped by the same event (a
+        // server restart) don't all retry in lockstep -- backoffMs itself stays a clean
+        // doubling sequence; only the actual delay used here is jittered.
+        const delayMs = applyJitter(backoffMs);
+        this.logDebug(`Live update connection error, retrying in ${Math.round(delayMs)}ms: ${errorMessage(e)}`);
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
         backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
       }
+    }
+  }
+
+  // Waits until the current live connection drops, but doesn't just sleep -- every
+  // LIVE_SYNC_SAFETY_NET_INTERVAL_MS while it stays up, forces a full sync regardless of
+  // whether a push notification actually arrived. Mirrors Obsidian core's own Sync client
+  // (`window.setInterval(this.requestSync.bind(this), 3e4)`, confirmed via obsidian.asar
+  // v1.13.6 -- see #14_옵시디언싱크_정렬_구현계획.md): without this, a lost/dropped push would
+  // go unnoticed until the next manual sync or autoSync tick, and autoSync defaults to *off*
+  // (see settings.ts), so today there is effectively no safety net at all. Runs a full syncNow()
+  // rather than a cheaper incremental catch-up because pumice has no version-journal endpoint
+  // yet (see #14's "저널 기반" section) -- this'll get cheaper once that lands.
+  private async waitForCloseOrSafetyNet(): Promise<void> {
+    while (this.wsClosedPromise) {
+      const closedPromise = this.wsClosedPromise;
+      const timedOut = Symbol("safety-net-timeout");
+      const winner = await Promise.race([
+        closedPromise.then(() => "closed" as const),
+        new Promise<typeof timedOut>((resolve) => window.setTimeout(() => resolve(timedOut), LIVE_SYNC_SAFETY_NET_INTERVAL_MS)),
+      ]);
+      if (winner === "closed") return;
+      this.logDebug("Live sync safety net: forcing a sync regardless of push activity");
+      void this.syncNow();
     }
   }
 
