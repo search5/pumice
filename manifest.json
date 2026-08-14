@@ -3,7 +3,7 @@
   "name": "Pumice",
   "version": "0.0.35",
   "minAppVersion": "1.13.4",
-  "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
+  "description": "Sync, version, and publish your vault over your own self-hosted server.",
   "author": "Ji-Ho Lee",
   "authorUrl": "https://www.flask.moe",
   "isDesktopOnly": false
