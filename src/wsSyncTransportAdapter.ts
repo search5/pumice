@@ -28,7 +28,7 @@ interface WireFileMeta {
 
 // Only the subset of WsSyncTransport this adapter actually drives -- keeps tests from needing a
 // real WsSyncTransport + fake socket just to exercise the translation logic here.
-type WsTransportLike = Pick<WsSyncTransport, "request" | "requestStream" | "runUpload">;
+type WsTransportLike = Pick<WsSyncTransport, "request" | "requestStream" | "pushFile">;
 
 interface InFlightDownload {
   mtimeMs: number;
@@ -61,18 +61,22 @@ export class WsSyncTransportAdapter implements SyncTransport {
     };
   }
 
+  // PR6 of #14_옵시디언싱크_정렬_구현계획.md: the wire protocol no longer has a batch-upload op
+  // (upload_begin's fileCount wrapper is gone) -- each file is its own push_req/push_ack round
+  // trip, matching real Obsidian Sync's own per-file `push`. This loop is what preserves
+  // uploadBatch's existing contract ("resolves once every file in `files` has been acked") for
+  // syncClient.ts, which is otherwise completely unaware the wire protocol changed shape.
   async uploadBatch(vaultId: string, files: PreparedUploadFile[], onAck: (ack: UploadAckResult) => void): Promise<void> {
-    await this.ws.runUpload(
-      vaultId,
-      files.map((f) => ({
+    for (const f of files) {
+      const result = await this.ws.pushFile(vaultId, {
         path: f.path,
         totalBytes: f.data.byteLength,
         modifiedAtMs: f.mtimeMs,
         data: new Uint8Array(f.data),
         contentHash: f.contentHash,
-      })),
-      onAck
-    );
+      });
+      onAck({ path: f.path, ok: result.ok, error: result.error });
+    }
   }
 
   async downloadBatch(

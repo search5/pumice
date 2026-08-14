@@ -214,34 +214,75 @@ describe("WsSyncTransport.requestStream (download/history-download)", () => {
   });
 });
 
-describe("WsSyncTransport.runUpload", () => {
-  it("sends upload_begin, one header/binary/eof triplet per file, and resolves on stream_end", async () => {
+describe("WsSyncTransport.pushFile", () => {
+  // PR6 of #14_옵시디언싱크_정렬_구현계획.md -- replaced upload_begin/file_chunk_header/
+  // file_chunk_eof/upload_ack (a batch-oriented quartet) with a single push_req per file,
+  // matching real Obsidian Sync's own `push` op (confirmed via obsidian.asar analysis): declare
+  // path/hash/size up front, and the server either already has that content (dedup hit --
+  // push_ack comes straight back, no bytes sent) or asks for the raw binary frame.
+
+  it("sends push_req, then the binary frame once push_res says needData, and resolves with the ack", async () => {
     const { transport, ws } = await connectedTransport();
-    const acks: any[] = [];
-
     const data = new Uint8Array([9, 9]);
-    const promise = transport.runUpload(
-      "v1",
-      [{ path: "a.md", totalBytes: 2, modifiedAtMs: 5, data, contentHash: "h1" }],
-      (ack) => acks.push(ack)
-    );
 
-    expect(ws.jsonSent("upload_begin")).toEqual([{ op: "upload_begin", payload: { vaultId: "v1", fileCount: 1 } }]);
+    const promise = transport.pushFile("v1", { path: "a.md", totalBytes: 2, modifiedAtMs: 5, data, contentHash: "h1" });
 
-    // contentHash is declared up front in the header now too, not just at eof below (item 6,
-    // 2026-08 re-analysis follow-up -- see wsTransport.ts's comment at the send site).
-    expect(ws.jsonSent("file_chunk_header")[0]).toEqual({
-      op: "file_chunk_header",
-      payload: { vaultId: "v1", path: "a.md", totalBytes: 2, modifiedAtMs: 5, contentHash: "h1" },
-    });
+    expect(ws.jsonSent("push_req")).toEqual([
+      { op: "push_req", payload: { vaultId: "v1", path: "a.md", contentHash: "h1", sizeBytes: 2, modifiedAtMs: 5 } },
+    ]);
+    expect(ws.binarySent()).toEqual([]); // not sent yet -- waiting on push_res
+
+    ws.simulateJson({ op: "push_res", payload: { needData: true } });
     expect(ws.binarySent()).toEqual([data]);
-    expect(ws.jsonSent("file_chunk_eof")[0]).toEqual({ op: "file_chunk_eof", payload: { path: "a.md", contentHash: "h1" } });
 
-    ws.simulateJson({ op: "upload_ack", payload: { path: "a.md", ok: true, error: "" } });
+    ws.simulateJson({ op: "push_ack", payload: { ok: true, needData: true, error: "" } });
     ws.simulateJson({ op: "stream_end", payload: {} });
 
-    await promise;
-    expect(acks).toEqual([{ path: "a.md", ok: true, error: "" }]);
+    await expect(promise).resolves.toEqual({ ok: true, needData: true, error: "" });
+  });
+
+  it("resolves with the ack directly, sending no binary frame, on a dedup hit (no push_res)", async () => {
+    const { transport, ws } = await connectedTransport();
+    const data = new Uint8Array([9, 9]);
+
+    const promise = transport.pushFile("v1", { path: "a.md", totalBytes: 2, modifiedAtMs: 5, data, contentHash: "h1" });
+
+    ws.simulateJson({ op: "push_ack", payload: { ok: true, needData: false, error: "" } });
+    ws.simulateJson({ op: "stream_end", payload: {} });
+
+    await expect(promise).resolves.toEqual({ ok: true, needData: false, error: "" });
+    expect(ws.binarySent()).toEqual([]);
+  });
+
+  it("resolves with a failed ack (e.g. hash mismatch) without rejecting", async () => {
+    const { transport, ws } = await connectedTransport();
+    const data = new Uint8Array([9, 9]);
+
+    const promise = transport.pushFile("v1", { path: "a.md", totalBytes: 2, modifiedAtMs: 5, data, contentHash: "h1" });
+    ws.simulateJson({ op: "push_res", payload: { needData: true } });
+    ws.simulateJson({ op: "push_ack", payload: { ok: false, needData: true, error: "Header/eof content hash mismatch" } });
+    ws.simulateJson({ op: "stream_end", payload: {} });
+
+    await expect(promise).resolves.toEqual({ ok: false, needData: true, error: "Header/eof content hash mismatch" });
+  });
+
+  it("serializes a second pushFile call until the first finishes", async () => {
+    const { transport, ws } = await connectedTransport();
+    const data = new Uint8Array([1]);
+
+    const p1 = transport.pushFile("v1", { path: "a.md", totalBytes: 1, modifiedAtMs: 1, data, contentHash: "h1" });
+    const p2 = transport.pushFile("v1", { path: "b.md", totalBytes: 1, modifiedAtMs: 1, data, contentHash: "h2" });
+
+    expect(ws.jsonSent("push_req")).toHaveLength(1);
+
+    ws.simulateJson({ op: "push_ack", payload: { ok: true, needData: false, error: "" } });
+    ws.simulateJson({ op: "stream_end", payload: {} });
+    await p1;
+
+    expect(ws.jsonSent("push_req")).toHaveLength(2);
+    ws.simulateJson({ op: "push_ack", payload: { ok: true, needData: false, error: "" } });
+    ws.simulateJson({ op: "stream_end", payload: {} });
+    await p2;
   });
 });
 

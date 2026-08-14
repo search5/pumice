@@ -242,25 +242,37 @@ export class WsSyncTransport {
     });
   }
 
-  // ── upload: client-driven, server acks per file + a final stream_end ─────────────────────
+  // ── push: one file at a time, dedup-aware (PR6 of #14_옵시디언싱크_정렬_구현계획.md) ──────
+  //
+  // Replaced upload_begin/file_chunk_header/file_chunk_eof/upload_ack (a batch-oriented
+  // quartet) with a single push_req per file, matching real Obsidian Sync's own `push` op
+  // (confirmed via obsidian.asar analysis): declare path/hash/size up front, and the server
+  // either already has that content live somewhere else in the vault (a dedup hit -- push_ack
+  // comes straight back, no bytes needed) or replies push_res{needData:true} and the client
+  // sends the whole file as one raw binary frame. There's no more batch wrapper: the caller
+  // (wsSyncTransportAdapter.ts) just calls this once per file, and the connection's existing
+  // single-outstanding-request serialization is what a batch used to exist to guarantee.
 
-  runUpload(
-    vaultId: string,
-    files: UploadFileInput[],
-    onAck: (ack: { path: string; ok: boolean; error: string }) => void
-  ): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  pushFile(vaultId: string, file: UploadFileInput): Promise<{ ok: boolean; needData: boolean; error: string }> {
+    return new Promise((resolve, reject) => {
+      let result: { ok: boolean; needData: boolean; error: string } | null = null;
       const send = () => {
         this.pending = {
           kind: "stream",
           onFrame: (frame) => {
-            if (frame.kind === "json" && frame.op === "upload_ack") {
-              onAck(frame.payload as { path: string; ok: boolean; error: string });
+            if (frame.kind !== "json") return;
+            if (frame.op === "push_res" && (frame.payload as { needData: boolean }).needData) {
+              this.ws!.send(file.data);
+            } else if (frame.op === "push_ack") {
+              result = frame.payload as { ok: boolean; needData: boolean; error: string };
             }
           },
           resolve: () => {
             this.releaseSlot();
-            resolve();
+            // push_ack always precedes stream_end in practice (server sends it right before --
+            // see ws_sync_resource.py's _run_push), but fall back to a synthetic failure rather
+            // than resolving with null if that invariant is ever violated.
+            resolve(result ?? { ok: false, needData: false, error: "no ack received" });
           },
           reject: (e) => {
             this.releaseSlot();
@@ -268,21 +280,13 @@ export class WsSyncTransport {
           },
           sentAt: Date.now(),
         };
-        this.sendJson({ op: "upload_begin", payload: { vaultId, fileCount: files.length } });
-        for (const file of files) {
-          this.sendJson({
-            op: "file_chunk_header",
-            // contentHash declared up front here too (not just at eof below), mirroring
-            // Obsidian core's own Sync client -- see #11_websocket_동기화_프로토콜_설계.md's
-            // re-analysis and wire_types.ChunkHeader's docstring (server side) for why.
-            payload: {
-              vaultId, path: file.path, totalBytes: file.totalBytes, modifiedAtMs: file.modifiedAtMs,
-              contentHash: file.contentHash,
-            },
-          });
-          this.ws!.send(file.data);
-          this.sendJson({ op: "file_chunk_eof", payload: { path: file.path, contentHash: file.contentHash } });
-        }
+        this.sendJson({
+          op: "push_req",
+          payload: {
+            vaultId, path: file.path, contentHash: file.contentHash,
+            sizeBytes: file.totalBytes, modifiedAtMs: file.modifiedAtMs,
+          },
+        });
       };
       this.enqueue(send, reject);
     });
@@ -370,7 +374,7 @@ export class WsSyncTransport {
   private handleClose(): void {
     const err = new Error("WebSocket connection closed");
     // Snapshot and clear both before rejecting anything: `pending.reject` is wrapped with
-    // releaseSlot() (see request()/requestStream()/runUpload() above), which would otherwise
+    // releaseSlot() (see request()/requestStream()/pushFile() above), which would otherwise
     // shift the next queued request and actually send() it on this now-dead socket. Clearing
     // first makes that shift a no-op.
     const pending = this.pending;
@@ -414,7 +418,7 @@ export class WsSyncTransport {
   private checkRequestTimeouts(): void {
     if (!this.pending) return;
     if (Date.now() - this.pending.sentAt > REQUEST_TIMEOUT_MS) {
-      // reject() is wrapped with releaseSlot() (see request()/requestStream()/runUpload()), which
+      // reject() is wrapped with releaseSlot() (see request()/requestStream()/pushFile()), which
       // may immediately send() whatever's next in queue -- don't null out this.pending afterward
       // (that would clobber the newly-sent request's own pending state). close() below tears down
       // that request too via handleClose(), same as any other pending/queued request on close.

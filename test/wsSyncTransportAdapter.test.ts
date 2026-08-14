@@ -9,7 +9,7 @@ function fakeWs() {
   return {
     request: vi.fn(),
     requestStream: vi.fn(),
-    runUpload: vi.fn(),
+    pushFile: vi.fn(),
   };
 }
 
@@ -38,23 +38,37 @@ describe("WsSyncTransportAdapter.delta", () => {
 });
 
 describe("WsSyncTransportAdapter.uploadBatch", () => {
-  it("delegates to runUpload and translates acks back through onAck", async () => {
+  // PR6 of #14_옵시디언싱크_정렬_구현계획.md: the wire protocol dropped the batch-upload op, so
+  // this now loops pushFile() once per file -- these tests pin that translation, not pushFile()
+  // itself (already covered by wsTransport.test.ts).
+
+  it("calls pushFile once per file, in order, and translates each result back through onAck", async () => {
     const ws = fakeWs();
-    ws.runUpload.mockImplementation(async (_vaultId: string, _files: unknown, onAck: (a: unknown) => void) => {
-      onAck({ path: "a.md", ok: true, error: "" });
-    });
+    ws.pushFile.mockResolvedValueOnce({ ok: true, needData: true, error: "" });
+    ws.pushFile.mockResolvedValueOnce({ ok: false, needData: true, error: "boom" });
     const adapter = new WsSyncTransportAdapter(ws as any);
     const acks: unknown[] = [];
 
     const data = new TextEncoder().encode("hello").buffer;
-    await adapter.uploadBatch("vault1", [{ path: "a.md", data, contentHash: "h", mtimeMs: 123 }], (ack) => acks.push(ack));
-
-    expect(ws.runUpload).toHaveBeenCalledWith(
+    await adapter.uploadBatch(
       "vault1",
-      [{ path: "a.md", totalBytes: 5, modifiedAtMs: 123, data: expect.any(Uint8Array), contentHash: "h" }],
-      expect.any(Function)
+      [
+        { path: "a.md", data, contentHash: "h1", mtimeMs: 123 },
+        { path: "b.md", data, contentHash: "h2", mtimeMs: 456 },
+      ],
+      (ack) => acks.push(ack)
     );
-    expect(acks).toEqual([{ path: "a.md", ok: true, error: "" }]);
+
+    expect(ws.pushFile).toHaveBeenNthCalledWith(1, "vault1", {
+      path: "a.md", totalBytes: 5, modifiedAtMs: 123, data: expect.any(Uint8Array), contentHash: "h1",
+    });
+    expect(ws.pushFile).toHaveBeenNthCalledWith(2, "vault1", {
+      path: "b.md", totalBytes: 5, modifiedAtMs: 456, data: expect.any(Uint8Array), contentHash: "h2",
+    });
+    expect(acks).toEqual([
+      { path: "a.md", ok: true, error: "" },
+      { path: "b.md", ok: false, error: "boom" },
+    ]);
   });
 });
 
