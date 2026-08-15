@@ -3,6 +3,8 @@ import {
   classifyExistingFile,
   classifyNewFile,
   isPublishSupportedFile,
+  parseDescription,
+  parseImagePath,
   parsePermalink,
   parsePublishFlag,
   resolvePublishFlag,
@@ -81,6 +83,47 @@ describe("parsePermalink", () => {
 
   it("handles the site-root edge case where the value is just a slash", () => {
     expect(parsePermalink("/")).toBe("");
+  });
+});
+
+// parseDescription / parseImagePath -- unlike parsePermalink, real Obsidian's Social media link
+// previews doc doesn't describe any transformation of these values (no leading-slash stripping,
+// no truthy coercion beyond "is it a string") -- confirmed via obsidian.md/help since this logic
+// lives in Publish's site-side renderer, not the desktop app.js this session otherwise reverses
+// (see 20_description_image_지원.md). Both just pass a non-empty string through unchanged.
+describe("parseDescription", () => {
+  it("returns a non-empty string unchanged", () => {
+    expect(parseDescription("A custom description.")).toBe("A custom description.");
+  });
+
+  it("returns null for an empty string, null, or undefined", () => {
+    expect(parseDescription("")).toBeNull();
+    expect(parseDescription(null)).toBeNull();
+    expect(parseDescription(undefined)).toBeNull();
+  });
+
+  it("returns null for a non-string value", () => {
+    expect(parseDescription(1)).toBeNull();
+    expect(parseDescription(true)).toBeNull();
+    expect(parseDescription(["a"])).toBeNull();
+  });
+});
+
+describe("parseImagePath", () => {
+  it("returns a non-empty string unchanged, whether it's a vault path or an external URL", () => {
+    expect(parseImagePath("Attachments/cover.png")).toBe("Attachments/cover.png");
+    expect(parseImagePath("https://example.com/cover.png")).toBe("https://example.com/cover.png");
+  });
+
+  it("returns null for an empty string, null, or undefined", () => {
+    expect(parseImagePath("")).toBeNull();
+    expect(parseImagePath(null)).toBeNull();
+    expect(parseImagePath(undefined)).toBeNull();
+  });
+
+  it("returns null for a non-string value", () => {
+    expect(parseImagePath(1)).toBeNull();
+    expect(parseImagePath(false)).toBeNull();
   });
 });
 

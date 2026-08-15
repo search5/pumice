@@ -65,6 +65,31 @@ export function parsePermalink(value: unknown): string | null {
   return value.startsWith("/") ? value.substring(1) : value;
 }
 
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Parses a raw `description` frontmatter value. Unlike parsePermalink, real Obsidian's public
+ * docs (obsidian.md/help/Obsidian+Publish/Social+media+link+previews -- confirmed via web
+ * research, not app.js, since this logic lives in Publish's site-side renderer rather than the
+ * desktop app -- see 20_description_image_지원.md) describe no transformation beyond "is it set":
+ * a non-empty string passes through unchanged, everything else is "not set".
+ */
+export function parseDescription(value: unknown): string | null {
+  return nonEmptyString(value);
+}
+
+/**
+ * Parses a raw `image` frontmatter value (real Obsidian treats `cover` as an identical alias,
+ * deliberately not supported here per this session's own scoping decision -- see
+ * 20_description_image_지원.md). A non-empty string is returned unchanged whether it's a
+ * vault-relative path or an external URL -- resolving which is the server's job.
+ */
+export function parseImagePath(value: unknown): string | null {
+  return nonEmptyString(value);
+}
+
 /**
  * Real Obsidian's getPublishFlag folder-fallback: an explicit frontmatter value always wins
  * outright (checked upstream by the caller -- this function is only reached when

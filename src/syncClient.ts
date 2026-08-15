@@ -47,6 +47,15 @@ export type SyncLogCallback = (level: "debug" | "warn", message: string) => void
 // follow-up moved the actual definition to syncTransport.ts (see that file's own comment).
 export type { HistoryVersionEntry } from "./syncTransport";
 
+// Optional per-file frontmatter overrides publishFile() forwards to the server as obs-* headers
+// (see 19_permalink_지원.md / 20_description_image_지원.md) -- grouped into one options object
+// rather than positional params since a third field (image) made positional args unreadable.
+export interface PublishFileMeta {
+  permalink?: string | null;
+  description?: string | null;
+  image?: string | null;
+}
+
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
 // so the Vault API has no way to reach them at all). This follows Obsidian's official plugin
@@ -1305,7 +1314,7 @@ export class SyncClient {
 
   /** Returns the hash it computed for the upload, so callers can seed a local hash cache with it
    *  for free — it's already unavoidable work, computed regardless of any caching layer. */
-  public async publishFile(filePath: string, permalink?: string | null): Promise<string> {
+  public async publishFile(filePath: string, meta?: PublishFileMeta): Promise<string> {
     const siteId = this.vault.getName();
     const data = await readBinaryByPath(this.vault, filePath);
     // Same per-file upload size limit as core Publish (reverse-engineered from obsidian.asar:
@@ -1323,7 +1332,9 @@ export class SyncClient {
         "obs-id": siteId,
         "obs-path": encodeURIComponent(filePath),
         "obs-hash": hash,
-        ...(permalink ? { "obs-permalink": encodeURIComponent(permalink) } : {}),
+        ...(meta?.permalink ? { "obs-permalink": encodeURIComponent(meta.permalink) } : {}),
+        ...(meta?.description ? { "obs-description": encodeURIComponent(meta.description) } : {}),
+        ...(meta?.image ? { "obs-image": encodeURIComponent(meta.image) } : {}),
       },
       body: data,
     });

@@ -6,8 +6,8 @@ import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import {
-  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parsePermalink,
-  parsePublishFlag, resolvePublishFlag, scanSingleFile,
+  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseDescription,
+  parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag, scanSingleFile,
 } from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -36,6 +36,19 @@ export function getPublishFlag(app: App, file: TFile, includeFolders: string[], 
 export function getPublishPermalink(app: App, file: TFile): string | null {
   const cache = app.metadataCache.getFileCache(file);
   return parsePermalink(cache?.frontmatter?.permalink);
+}
+
+export function getPublishDescription(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseDescription(cache?.frontmatter?.description);
+}
+
+// Deliberately doesn't also read `cover` -- real Obsidian treats it as an identical alias for
+// `image`, but this session scoped that alias out of pumice's first pass (see
+// 20_description_image_지원.md).
+export function getPublishImage(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseImagePath(cache?.frontmatter?.image);
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {
@@ -1067,11 +1080,15 @@ class UploadProgressSection extends ModalSection {
           info.flairEl.setText(t("plugins.publish.label-status-deleted", "Deleted"));
         } else {
           const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
-          // Re-read the permalink fresh at upload time rather than threading it through the diff
-          // scan -- unlike the publish flag, it never affects what's shown/checked in the review
-          // list, so there's no reason to carry it that far.
-          const permalink = file instanceof TFile ? getPublishPermalink(this.modal.app, file) : null;
-          const hash = await client.publishFile(diff.path, permalink);
+          // Re-read permalink/description/image fresh at upload time rather than threading them
+          // through the diff scan -- unlike the publish flag, none of them affect what's
+          // shown/checked in the review list, so there's no reason to carry them that far.
+          const meta = file instanceof TFile ? {
+            permalink: getPublishPermalink(this.modal.app, file),
+            description: getPublishDescription(this.modal.app, file),
+            image: getPublishImage(this.modal.app, file),
+          } : undefined;
+          const hash = await client.publishFile(diff.path, meta);
           // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
           // value so the next Publish scan doesn't re-read and re-hash this same content.
           if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
