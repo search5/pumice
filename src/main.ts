@@ -3,7 +3,7 @@ import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient, type SyncProgressPhase } from "./syncClient";
-import { WsSyncTransport, HEARTBEAT_CHECK_INTERVAL_MS, type PushedFileChangeMeta } from "./wsTransport";
+import { WsSyncTransport, WsTransportError, HEARTBEAT_CHECK_INTERVAL_MS, type PushedFileChangeMeta } from "./wsTransport";
 import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
 import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
@@ -480,6 +480,7 @@ export default class SyncPlugin extends Plugin {
       await ws.connect(this.buildWsUrl(), {
         token,
         vaultId: this.app.vault.getName(),
+        vaultOwner: this.settings.sharedVaultOwner || "",
         deviceName: this.settings.deviceName || "",
         userName: this.settings.userName || "",
         clientVersion: this.manifest.version,
@@ -904,7 +905,17 @@ export default class SyncPlugin extends Plugin {
         // server restart) don't all retry in lockstep -- backoffMs itself stays a clean
         // doubling sequence; only the actual delay used here is jittered.
         const delayMs = applyJitter(backoffMs);
-        this.logDebug(`Live update connection error, retrying in ${Math.round(delayMs)}ms: ${errorMessage(e)}`);
+        // Vault sharing (see 14_vault_sharing_설계.md): a PERMISSION_DENIED init failure while
+        // sharedVaultOwner is set means the share is missing/revoked, not a transient network
+        // problem -- still retried with the same backoff as any other failure (nothing here
+        // guarantees the condition is permanent, e.g. the owner could re-invite), but the log
+        // says so plainly instead of just "connection error" so it isn't mistaken for one.
+        const deniedSharedVault =
+          e instanceof WsTransportError && e.code === "PERMISSION_DENIED" && this.settings.sharedVaultOwner;
+        const detail = deniedSharedVault
+          ? `no access to ${this.settings.sharedVaultOwner}'s shared vault -- check the invite or your account's email`
+          : errorMessage(e);
+        this.logDebug(`Live update connection error, retrying in ${Math.round(delayMs)}ms: ${detail}`);
         await new Promise((resolve) => window.setTimeout(resolve, delayMs));
         backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
       }

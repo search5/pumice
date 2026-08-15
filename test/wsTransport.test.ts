@@ -62,7 +62,7 @@ function makeTransport() {
 async function connectedTransport() {
   const { transport, getWs } = makeTransport();
   const connectPromise = transport.connect("ws://x/ws", {
-    token: "tok", vaultId: "vault1", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 0,
+    token: "tok", vaultId: "vault1", vaultOwner: "", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 0,
   });
   const ws = getWs();
   ws.simulateOpen();
@@ -75,13 +75,13 @@ describe("WsSyncTransport.connect", () => {
   it("sends init on open and resolves with the init_ok payload", async () => {
     const { transport, getWs } = makeTransport();
     const promise = transport.connect("ws://x/ws", {
-      token: "tok", vaultId: "vault1", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 42,
+      token: "tok", vaultId: "vault1", vaultOwner: "", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 42,
     });
     const ws = getWs();
     ws.simulateOpen();
 
     expect(ws.jsonSent("init")).toEqual([
-      { op: "init", payload: { token: "tok", vaultId: "vault1", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 42 } },
+      { op: "init", payload: { token: "tok", vaultId: "vault1", vaultOwner: "", deviceName: "dev", userName: "user", clientVersion: "0.0.1", lastKnownChangeId: 42 } },
     ]);
 
     // maxFileSizeBytes (perFileMax, see #11_websocket_동기화_프로토콜_설계.md's re-analysis)
@@ -96,12 +96,40 @@ describe("WsSyncTransport.connect", () => {
 
   it("rejects if the server responds to init with an error", async () => {
     const { transport, getWs } = makeTransport();
-    const promise = transport.connect("ws://x/ws", { token: "bad", vaultId: "v", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
+    const promise = transport.connect("ws://x/ws", { token: "bad", vaultId: "v", vaultOwner: "", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
     const ws = getWs();
     ws.simulateOpen();
     ws.simulateJson({ op: "error", payload: { code: "UNAUTHENTICATED", message: "nope" } });
 
     await expect(promise).rejects.toMatchObject({ code: "UNAUTHENTICATED", message: "nope" });
+  });
+
+  // Vault sharing (see 14_vault_sharing_설계.md) -- vaultOwner rides along in the init payload
+  // unchanged, the same way every other field does; the transport itself has no sharing-aware
+  // logic of its own beyond passing this field through.
+  it("sends a non-empty vaultOwner through to the server unmodified", async () => {
+    const { transport, getWs } = makeTransport();
+    transport.connect("ws://x/ws", {
+      token: "tok", vaultId: "vault1", vaultOwner: "alice", deviceName: "dev", userName: "user",
+      clientVersion: "0.0.1", lastKnownChangeId: 0,
+    });
+    const ws = getWs();
+    ws.simulateOpen();
+
+    expect(ws.jsonSent("init")[0].payload).toMatchObject({ vaultOwner: "alice" });
+  });
+
+  it("rejects with PERMISSION_DENIED when the server refuses a requested shared vault", async () => {
+    const { transport, getWs } = makeTransport();
+    const promise = transport.connect("ws://x/ws", {
+      token: "tok", vaultId: "vault1", vaultOwner: "alice", deviceName: "", userName: "",
+      clientVersion: "", lastKnownChangeId: 0,
+    });
+    const ws = getWs();
+    ws.simulateOpen();
+    ws.simulateJson({ op: "error", payload: { code: "PERMISSION_DENIED", message: "No access to this vault" } });
+
+    await expect(promise).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
   });
 });
 
@@ -504,7 +532,7 @@ describe("WsSyncTransport heartbeat/timeout during the init handshake", () => {
 
   it("does not send an idle ping while init is still outstanding, even past the 10s idle threshold", () => {
     const { transport, getWs } = makeTransport();
-    transport.connect("ws://x/ws", { token: "tok", vaultId: "v", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
+    transport.connect("ws://x/ws", { token: "tok", vaultId: "v", vaultOwner: "", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
     const ws = getWs();
     ws.simulateOpen();
     ws.sent = []; // clear the init frame so we only look at what checkHeartbeat() itself sends
@@ -517,7 +545,7 @@ describe("WsSyncTransport heartbeat/timeout during the init handshake", () => {
 
   it("still times out and rejects a connect() whose init never gets a response after 60s", async () => {
     const { transport, getWs } = makeTransport();
-    const promise = transport.connect("ws://x/ws", { token: "tok", vaultId: "v", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
+    const promise = transport.connect("ws://x/ws", { token: "tok", vaultId: "v", vaultOwner: "", deviceName: "", userName: "", clientVersion: "", lastKnownChangeId: 0 });
     const ws = getWs();
     ws.simulateOpen();
     const onClose = vi.fn();

@@ -28,6 +28,14 @@ export interface SyncPluginSettings {
   deviceName: string;
   userName: string;
 
+  // "" (default) = this vault is my own. Non-empty = sync against that account's vault
+  // instead, using this local folder's name as the vault_id -- requires an accepted (or
+  // pending, since sharing is binary access with no role gate) share from that account.
+  // See 14_vault_sharing_설계.md -- pumice has no vault picker, so this is the only way to
+  // point a local vault at someone else's, and the local folder name still has to match the
+  // owner's vault_id exactly, same as pumice's existing self-owned convention.
+  sharedVaultOwner: string;
+
   syncFiles: boolean;
   syncBookmarks: boolean;
   // .obsidian/plugins/** (code, manifest, assets) + community-plugins.json (the enabled list).
@@ -70,6 +78,8 @@ export function getDefaultSettings(configDir: string): SyncPluginSettings {
     useTls: false,
     deviceName: resolveDefaultDeviceName(),
     userName: "Obsidian User",
+
+    sharedVaultOwner: "",
 
     syncFiles: true,
     syncBookmarks: true,

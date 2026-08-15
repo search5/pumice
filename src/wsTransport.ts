@@ -20,6 +20,12 @@ export interface WsEnvelope<TPayload = unknown> {
 export interface InitPayload {
   token: string;
   vaultId: string;
+  // Vault sharing (see 14_vault_sharing_설계.md): the account whose vault this connection
+  // should be authorized against. "" (the overwhelming common case) means "my own vault" --
+  // the server resolves that with zero extra work (see resolve_vault_owner()'s self-owned
+  // short circuit). Non-empty only when the caller has an invite/share for that account's
+  // vault; otherwise the server rejects init with a PERMISSION_DENIED error op.
+  vaultOwner: string;
   deviceName: string;
   userName: string;
   clientVersion: string;
