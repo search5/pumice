@@ -502,16 +502,31 @@ export class SyncClient {
     }
   }
 
-  // Backs up `path`'s current local content to `<name>.sync-conflict-<timestamp>.<ext>` before
-  // it's about to be replaced -- shared by every conflictResolution path that needs this safety
-  // net (manual, merge's can't-attempt-at-all fallback, and merge's marked-conflict case).
-  private async backupLocalVersion(path: string): Promise<string> {
-    const oldData = await readBinaryByPath(this.vault, path);
+  private conflictBackupPath(path: string): string {
     const ext = pathUtil.extname(path);
     const baseName = path.substring(0, path.length - ext.length);
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
+    return `${baseName}.sync-conflict-${timestamp}${ext}`;
+  }
+
+  // Backs up `path`'s current local content to `<name>.sync-conflict-<timestamp>.<ext>` before
+  // it's about to be replaced -- shared by every conflictResolution path that needs this safety
+  // net (manual, server-wins, merge's can't-attempt-at-all fallback, and merge's marked-conflict
+  // case).
+  private async backupLocalVersion(path: string): Promise<string> {
+    const oldData = await readBinaryByPath(this.vault, path);
+    const conflictPath = this.conflictBackupPath(path);
     await writeBinaryByPath(this.vault, conflictPath, oldData);
+    return conflictPath;
+  }
+
+  // client-wins keeps the local file exactly as-is (never overwritten), but the losing remote
+  // edit -- a real change made on another device -- must not just vanish either: it's written
+  // alongside as a conflict copy instead of being silently discarded, the same safety net every
+  // other resolution mode gets for whichever side loses.
+  private async backupRemoteVersion(path: string, data: ArrayBuffer): Promise<string> {
+    const conflictPath = this.conflictBackupPath(path);
+    await writeBinaryByPath(this.vault, conflictPath, data);
     return conflictPath;
   }
 
@@ -593,10 +608,6 @@ export class SyncClient {
       );
 
       const exists = await existsByPath(this.vault, currentPath);
-      if (exists && effectiveConflictResolution === "client-wins") {
-        // Deliberately not a failure -- retrying would only hit this same skip forever.
-        return true;
-      }
 
       let plainData: ArrayBuffer = file.data;
       // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
@@ -604,7 +615,7 @@ export class SyncClient {
       // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
       // the buffer's already in memory). Computed up front (moved ahead of the conflict
       // check below) since the "merge" conflict mode needs this plaintext as the "remote"
-      // side of a 3-way merge, not just for the eventual write.
+      // side of a 3-way merge, and client-wins now needs it too, to back up the losing side.
       let plainHashForCache = calculatedHash;
       if (this.settings.enableE2EE && this.settings.e2eePassword) {
         const key = await this.getE2eeKey();
@@ -612,10 +623,24 @@ export class SyncClient {
         plainHashForCache = await sha256(plainData);
       }
 
+      if (exists && effectiveConflictResolution === "client-wins") {
+        // The local file wins and is left untouched, but the losing remote edit is a real
+        // change made on another device -- back it up as a conflict copy instead of silently
+        // discarding it, the same safety net every other resolution mode gets.
+        try {
+          const conflictPath = await this.backupRemoteVersion(currentPath, plainData);
+          new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
+        } catch (backupErr) {
+          console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
+        }
+        // Deliberately not a failure -- retrying would only hit this same skip forever.
+        return true;
+      }
+
       let handledByMerge = false;
 
       if (exists) {
-        let needsBackupAndOverwrite = effectiveConflictResolution === "manual";
+        let needsBackupAndOverwrite = effectiveConflictResolution === "manual" || effectiveConflictResolution === "server-wins";
 
         if (effectiveConflictResolution === "merge") {
           const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);

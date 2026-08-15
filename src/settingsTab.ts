@@ -174,7 +174,7 @@ export class SyncSettingTab extends PluginSettingTab {
         items: [
           {
             name: t("settings.option-conflict-resolution", "Conflict resolution method"),
-            desc: t("settings.option-conflict-resolution-desc", "How to handle conflicts between client and server files"),
+            desc: t("settings.option-conflict-resolution-desc", "How to handle conflicts between client and server files. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded."),
             control: {
               type: "dropdown",
               key: "conflictResolution",

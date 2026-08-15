@@ -179,7 +179,7 @@ export const en: Record<string, string> = {
   "status.sync-error": "Sync error",
 
   "settings.option-conflict-resolution": "Conflict resolution method",
-  "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files",
+  "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded.",
   "settings.option-conflict-manual": "Manual (choose yourself)",
   "settings.option-conflict-server-wins": "Server wins",
   "settings.option-conflict-client-wins": "Client wins",

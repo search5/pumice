@@ -202,8 +202,38 @@ describe("SyncClient downloadFileBatch -- client-wins", () => {
     // "Deliberately not a failure -- retrying would only hit this same skip forever" (see the
     // code's own comment): the skip must still be reported as accepted, not a failed path.
     expect(accepted()).toBe(true);
-    expect(vault.createBinary).not.toHaveBeenCalled();
     expect(vault.modifyBinary).not.toHaveBeenCalled();
+  });
+
+  // The local file always wins under client-wins, but the losing remote version must not just be
+  // silently discarded -- back it up the same way manual/server-wins back up whichever side loses,
+  // so a real edit made on another device is never lost, only deferred to a manual look.
+  it("backs up the losing remote version as a conflict copy, without touching the local file", async () => {
+    const remote = "remote content";
+    const remoteData = enc(remote);
+    const remoteHash = await sha256(remoteData);
+    const path = "existing.md";
+
+    const file = new TFile();
+    file.path = path;
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockImplementation((p: string) => (p === path ? file : null));
+
+    const { transport, accepted } = makeDownloadTransport(remoteData, remoteHash, 5);
+    const client = makeClientEx(transport, vault, fakeFileManager(), { conflictResolution: "client-wins" });
+
+    await client.applyPushedFileChange({ path, modified_at_ms: 5, size_bytes: remoteData.byteLength, content_hash: remoteHash, is_deleted: false });
+
+    expect(accepted()).toBe(true);
+    // The local file itself is genuinely untouched -- client-wins means the main path keeps
+    // exactly what's already there, no in-place modification.
+    expect(vault.modifyBinary).not.toHaveBeenCalled();
+    // The losing (remote) content lands in a new conflict-suffixed file instead.
+    expect(vault.createBinary).toHaveBeenCalledTimes(1);
+    const [backupPath, backupData] = vault.createBinary.mock.calls[0] as [string, ArrayBuffer];
+    expect(backupPath).toMatch(CONFLICT_BACKUP_RE);
+    expect(backupPath).not.toBe(path);
+    expect(dec(backupData)).toBe(remote);
   });
 });
 
@@ -239,6 +269,58 @@ describe("SyncClient downloadFileBatch -- manual conflict resolution", () => {
     const backupOrder = vault.createBinary.mock.invocationCallOrder[0];
     const overwriteOrder = vault.modifyBinary.mock.invocationCallOrder[0];
     expect(backupOrder).toBeLessThan(overwriteOrder);
+  });
+});
+
+describe("SyncClient downloadFileBatch -- server-wins conflict resolution", () => {
+  it("backs up the existing local version, then overwrites it with the remote content, same as manual", async () => {
+    const local = "local content";
+    const remote = "remote content";
+    const remoteData = enc(remote);
+    const remoteHash = await sha256(remoteData);
+    const path = "note.md";
+
+    const file = new TFile();
+    file.path = path;
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockImplementation((p: string) => (p === path ? file : null));
+    vault.readBinary.mockResolvedValue(enc(local));
+
+    const { transport } = makeDownloadTransport(remoteData, remoteHash, 42);
+    const client = makeClientEx(transport, vault, fakeFileManager(), { conflictResolution: "server-wins" });
+
+    await client.applyPushedFileChange({ path, modified_at_ms: 42, size_bytes: remoteData.byteLength, content_hash: remoteHash, is_deleted: false });
+
+    expect(vault.createBinary).toHaveBeenCalledTimes(1);
+    const [backupPath, backupData] = vault.createBinary.mock.calls[0] as [string, ArrayBuffer];
+    expect(backupPath).toMatch(CONFLICT_BACKUP_RE);
+    expect(backupPath).not.toBe(path);
+    expect(dec(backupData)).toBe(local);
+
+    expect(vault.modifyBinary).toHaveBeenCalledTimes(1);
+    expect(dec(vault.modifyBinary.mock.calls[0][1] as ArrayBuffer)).toBe(remote);
+
+    const backupOrder = vault.createBinary.mock.invocationCallOrder[0];
+    const overwriteOrder = vault.modifyBinary.mock.invocationCallOrder[0];
+    expect(backupOrder).toBeLessThan(overwriteOrder);
+  });
+
+  it("does not back up anything when the file doesn't already exist locally -- there's no local side to lose", async () => {
+    const remote = "remote content";
+    const remoteData = enc(remote);
+    const remoteHash = await sha256(remoteData);
+    const path = "brand-new.md";
+
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockReturnValue(null);
+
+    const { transport } = makeDownloadTransport(remoteData, remoteHash, 42);
+    const client = makeClientEx(transport, vault, fakeFileManager(), { conflictResolution: "server-wins" });
+
+    await client.applyPushedFileChange({ path, modified_at_ms: 42, size_bytes: remoteData.byteLength, content_hash: remoteHash, is_deleted: false });
+
+    expect(vault.createBinary).toHaveBeenCalledTimes(1);
+    expect(dec(vault.createBinary.mock.calls[0][1] as ArrayBuffer)).toBe(remote);
   });
 });
 

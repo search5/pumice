@@ -177,7 +177,7 @@ export const ko: Record<string, string> = {
   "status.sync-error": "동기화 오류",
 
   "settings.option-conflict-resolution": "충돌 해결 방식",
-  "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법",
+  "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법입니다. 어느 쪽을 택하든, 선택되지 않은 쪽은 항상 .sync-conflict 백업 파일로 남고 조용히 버려지지 않습니다.",
   "settings.option-conflict-manual": "수동 (직접 선택)",
   "settings.option-conflict-server-wins": "서버 우선",
   "settings.option-conflict-client-wins": "클라이언트 우선",
