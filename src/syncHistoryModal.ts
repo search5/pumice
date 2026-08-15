@@ -5,7 +5,7 @@ import { renderDiff } from "./diffView";
 import { enableSwipeNavigation } from "./swipeNavigation";
 import { hasLocalSnapshots, LocalSnapshotModal } from "./fileRecoveryModal";
 import { errorMessage } from "./errorMessage";
-import { MARKDOWN_EXTENSIONS, PLAINTEXT_EXTENSIONS } from "./textFileTypes";
+import { MARKDOWN_EXTENSIONS, HISTORY_DIFFABLE_PLAINTEXT_EXTENSIONS } from "./textFileTypes";
 
 interface HistoryVersion {
   history_id: number;
@@ -613,7 +613,7 @@ export class SyncHistoryModal extends Modal {
   private async renderVersionContent(version: HistoryVersion) {
     const ext = this.file.extension;
     const isMarkdown = MARKDOWN_EXTENSIONS.includes(ext);
-    const isText = isMarkdown || PLAINTEXT_EXTENSIONS.includes(ext);
+    const isText = isMarkdown || HISTORY_DIFFABLE_PLAINTEXT_EXTENSIONS.includes(ext);
 
     try {
       if (isText) {
