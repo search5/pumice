@@ -53,6 +53,19 @@ export function parsePublishFlag(value: unknown): boolean | null {
 }
 
 /**
+ * Parses a raw `permalink` frontmatter value the same way real Obsidian Publish's
+ * Site.getPublicHref does (confirmed via obsidian.asar analysis -- see
+ * 19_permalink_지원.md): only a truthy string overrides the default path-based URL. Unlike
+ * parsePublishFlag, a non-string value (number, boolean, array...) is NOT coerced by
+ * truthiness -- it's ignored outright, matching real Obsidian's own `typeof r === "string"`
+ * guard. A single leading "/" is stripped (only one -- "//x" keeps one slash).
+ */
+export function parsePermalink(value: unknown): string | null {
+  if (typeof value !== "string" || !value) return null;
+  return value.startsWith("/") ? value.substring(1) : value;
+}
+
+/**
  * Real Obsidian's getPublishFlag folder-fallback: an explicit frontmatter value always wins
  * outright (checked upstream by the caller -- this function is only reached when
  * `explicitFlag` is null, i.e. the frontmatter has no publish field at all, which is every

@@ -3,6 +3,7 @@ import {
   classifyExistingFile,
   classifyNewFile,
   isPublishSupportedFile,
+  parsePermalink,
   parsePublishFlag,
   resolvePublishFlag,
   scanSingleFile,
@@ -43,6 +44,43 @@ describe("parsePublishFlag", () => {
     expect(parsePublishFlag("")).toBe(false);
     expect(parsePublishFlag(1)).toBe(true);
     expect(parsePublishFlag(0)).toBe(false);
+  });
+});
+
+// parsePermalink -- matches real Obsidian Publish's Site.getPublicHref exactly (confirmed via
+// obsidian.asar analysis, see 19_permalink_지원.md): only a truthy string overrides the
+// default path-based URL. A single leading "/" is stripped; everything else (empty string,
+// null/undefined, non-string values) is treated as "not set".
+describe("parsePermalink", () => {
+  it("strips a single leading slash", () => {
+    expect(parsePermalink("/notes/a")).toBe("notes/a");
+  });
+
+  it("leaves a value with no leading slash untouched", () => {
+    expect(parsePermalink("notes/a")).toBe("notes/a");
+  });
+
+  it("strips only one leading slash, not all of them", () => {
+    expect(parsePermalink("//x")).toBe("/x");
+  });
+
+  it("treats an empty string as 'not set', same as real Obsidian's truthy check", () => {
+    expect(parsePermalink("")).toBeNull();
+  });
+
+  it("returns null when the field is missing entirely", () => {
+    expect(parsePermalink(null)).toBeNull();
+    expect(parsePermalink(undefined)).toBeNull();
+  });
+
+  it("ignores non-string values entirely, unlike parsePublishFlag's truthy fallback", () => {
+    expect(parsePermalink(1)).toBeNull();
+    expect(parsePermalink(true)).toBeNull();
+    expect(parsePermalink(["a", "b"])).toBeNull();
+  });
+
+  it("handles the site-root edge case where the value is just a slash", () => {
+    expect(parsePermalink("/")).toBe("");
   });
 });
 

@@ -6,8 +6,8 @@ import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import {
-  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parsePublishFlag,
-  resolvePublishFlag, scanSingleFile,
+  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parsePermalink,
+  parsePublishFlag, resolvePublishFlag, scanSingleFile,
 } from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -29,6 +29,13 @@ export function getPublishFlag(app: App, file: TFile, includeFolders: string[], 
   const cache = app.metadataCache.getFileCache(file);
   const explicit = parsePublishFlag(cache?.frontmatter?.publish);
   return resolvePublishFlag(explicit, isUnderFolder(file.path, excludeFolders), isUnderFolder(file.path, includeFolders));
+}
+
+// permalink has no folder fallback (it's a pure frontmatter override, unlike the publish flag),
+// so unlike getPublishFlag there's no include/exclude folder logic here.
+export function getPublishPermalink(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parsePermalink(cache?.frontmatter?.permalink);
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {
@@ -1059,10 +1066,14 @@ class UploadProgressSection extends ModalSection {
           await client.unpublishFile(diff.path);
           info.flairEl.setText(t("plugins.publish.label-status-deleted", "Deleted"));
         } else {
-          const hash = await client.publishFile(diff.path);
+          const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
+          // Re-read the permalink fresh at upload time rather than threading it through the diff
+          // scan -- unlike the publish flag, it never affects what's shown/checked in the review
+          // list, so there's no reason to carry it that far.
+          const permalink = file instanceof TFile ? getPublishPermalink(this.modal.app, file) : null;
+          const hash = await client.publishFile(diff.path, permalink);
           // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
           // value so the next Publish scan doesn't re-read and re-hash this same content.
-          const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
           if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
           info.flairEl.setText(t("plugins.publish.label-status-published", "Published"));
         }

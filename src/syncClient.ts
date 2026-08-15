@@ -1305,7 +1305,7 @@ export class SyncClient {
 
   /** Returns the hash it computed for the upload, so callers can seed a local hash cache with it
    *  for free — it's already unavoidable work, computed regardless of any caching layer. */
-  public async publishFile(filePath: string): Promise<string> {
+  public async publishFile(filePath: string, permalink?: string | null): Promise<string> {
     const siteId = this.vault.getName();
     const data = await readBinaryByPath(this.vault, filePath);
     // Same per-file upload size limit as core Publish (reverse-engineered from obsidian.asar:
@@ -1323,6 +1323,7 @@ export class SyncClient {
         "obs-id": siteId,
         "obs-path": encodeURIComponent(filePath),
         "obs-hash": hash,
+        ...(permalink ? { "obs-permalink": encodeURIComponent(permalink) } : {}),
       },
       body: data,
     });

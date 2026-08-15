@@ -120,6 +120,36 @@ describe("SyncClient.publishFile", () => {
 
     await expect(client.publishFile("note.md")).rejects.toThrow(/disk full/);
   });
+
+  it("sends the permalink as a URL-encoded obs-permalink header when given", async () => {
+    mockHttp({ status: 200 });
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    vault.adapter.readBinary.mockResolvedValue(new TextEncoder().encode("hello").buffer);
+    const client = makeClient(fakeTransport(), vault, fakeFileManager());
+
+    await client.publishFile("note.md", "custom/url slug");
+
+    const call = lastCall();
+    expect(call.headers?.["obs-permalink"]).toBe(encodeURIComponent("custom/url slug"));
+  });
+
+  it("omits the obs-permalink header when the permalink is null, undefined, or empty", async () => {
+    mockHttp({ status: 200 });
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    vault.adapter.readBinary.mockResolvedValue(new TextEncoder().encode("hello").buffer);
+    const client = makeClient(fakeTransport(), vault, fakeFileManager());
+
+    await client.publishFile("note.md");
+    expect(lastCall().headers?.["obs-permalink"]).toBeUndefined();
+
+    await client.publishFile("note.md", null);
+    expect(lastCall().headers?.["obs-permalink"]).toBeUndefined();
+
+    await client.publishFile("note.md", "");
+    expect(lastCall().headers?.["obs-permalink"]).toBeUndefined();
+  });
 });
 
 describe("SyncClient.unpublishFile", () => {
