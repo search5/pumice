@@ -4,6 +4,7 @@ main.js
 # feedback_never_git_add_dash_a memory: llm-wiki was previously committed by mistake and had to
 # be purged from pushed history).
 llm-wiki/
+git-force-refetch-feature-websocket.txt
 docs/_build/
 docs/locale/*/LC_MESSAGES/*.mo
 coverage/
