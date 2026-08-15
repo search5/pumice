@@ -1134,6 +1134,24 @@ export class PublishModal extends Modal {
     contentEl.empty();
     this.titleEl.setText(t("plugins.publish.action-publish-changes", "Publish changes"));
 
+    // Vault sharing (see 14_vault_sharing_설계.md): a collaborator's Publish actions would
+    // otherwise silently operate on their OWN unrelated account's publish directory instead of
+    // the vault owner's -- getAuthenticatedUsername()/every /api/* call below is scoped to
+    // whichever account this device's token belongs to, with no vaultOwner concept at all.
+    // Real Obsidian keeps Publish collaboration (site collaboration) entirely separate from
+    // vault sync sharing too, so this isn't a scope cut, it's matching that same separation.
+    if (this.plugin.settings.sharedVaultOwner) {
+      contentEl.createEl("p", {
+        cls: "setting-item-description",
+        text: t(
+          "plugins.publish.msg-not-available-for-shared-vault",
+          "Publish isn't available for a shared vault yet -- only the vault owner ({{owner}}) can manage Publish for it.",
+          { owner: this.plugin.settings.sharedVaultOwner }
+        ),
+      });
+      return;
+    }
+
     contentEl.createDiv("message-container", el => {
       this.errorMessageEl = el.createDiv("message mod-error");
       this.errorMessageEl.hide();

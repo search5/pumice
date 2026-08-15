@@ -340,3 +340,106 @@ describe("SyncClient share methods", () => {
     await expect(client.acceptShare("invite-code")).rejects.toThrow(/boom/);
   });
 });
+
+// Vault sync sharing (see 14_vault_sharing_설계.md) -- distinct from the Publish "share" methods
+// above (those grant read access to a published *site*, not to the vault's own sync data).
+describe("SyncClient vault-sharing methods", () => {
+  it("inviteVaultShare posts {token, vault_id, email}", async () => {
+    mockHttp({ status: 200 });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.inviteVaultShare("friend@example.com");
+
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/vault/share/invite");
+    expect(JSON.parse(call.body as string)).toEqual({ token: "test-token", vault_id: "myvault", email: "friend@example.com" });
+  });
+
+  it("inviteVaultShare throws on failure", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.inviteVaultShare("friend@example.com")).rejects.toThrow(/boom/);
+  });
+
+  it("listVaultShares posts {token, vault_id} and returns the shares list", async () => {
+    mockHttp({ status: 200, json: { shares: [{ uid: "u1", email: "friend@example.com", accepted: false, createdAtMs: 1000 }] } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const shares = await client.listVaultShares();
+
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/vault/share/list");
+    expect(JSON.parse(call.body as string)).toEqual({ token: "test-token", vault_id: "myvault" });
+    expect(shares).toEqual([{ uid: "u1", email: "friend@example.com", accepted: false, createdAtMs: 1000 }]);
+  });
+
+  it("listVaultShares returns an empty array when the response omits shares", async () => {
+    mockHttp({ status: 200, json: {} });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    expect(await client.listVaultShares()).toEqual([]);
+  });
+
+  it("listVaultShares throws on failure", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.listVaultShares()).rejects.toThrow(/boom/);
+  });
+
+  it("removeVaultShare posts {token, vault_id, share_uid}", async () => {
+    mockHttp({ status: 200 });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.removeVaultShare("u1");
+
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/vault/share/remove");
+    expect(JSON.parse(call.body as string)).toEqual({ token: "test-token", vault_id: "myvault", share_uid: "u1" });
+  });
+
+  it("removeVaultShare throws on failure", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.removeVaultShare("u1")).rejects.toThrow(/boom/);
+  });
+
+  it("leaveSharedVault posts {token, ownerUsername, vaultId}", async () => {
+    mockHttp({ status: 200 });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.leaveSharedVault("alice");
+
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/vault/share/leave");
+    expect(JSON.parse(call.body as string)).toEqual({ token: "test-token", ownerUsername: "alice", vaultId: "myvault" });
+  });
+
+  it("leaveSharedVault throws on failure", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.leaveSharedVault("alice")).rejects.toThrow(/boom/);
+  });
+
+  it("listSharedWithMe GETs with a bearer token and returns the vault list", async () => {
+    mockHttp({ status: 200, json: { vaults: [{ ownerUsername: "alice", vaultId: "vault1", accepted: true, createdAtMs: 1000 }] } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const vaults = await client.listSharedWithMe();
+
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/vault/shared-with-me");
+    expect(call.headers?.["Authorization"]).toBe("Bearer test-token");
+    expect(vaults).toEqual([{ ownerUsername: "alice", vaultId: "vault1", accepted: true, createdAtMs: 1000 }]);
+  });
+
+  it("listSharedWithMe returns an empty array on failure rather than throwing", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    expect(await client.listSharedWithMe()).toEqual([]);
+  });
+});

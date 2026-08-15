@@ -208,4 +208,31 @@ export const ko: Record<string, string> = {
   "settings.label-checking": "확인 중...",
   "settings.msg-connection-success": "서버 연결 성공",
   "settings.msg-connection-failed": "서버 연결 실패: {{error}}",
+
+  // Vault 공유 (14_vault_sharing_설계.md 참고)
+  "settings.heading-vault-sharing": "Vault 공유",
+  "settings.option-manage-sharing": "공유 관리…",
+  "settings.option-manage-sharing-desc": "다른 계정을 초대해서 이 vault를 함께 동기화합니다 — 초대받은 계정은 이미 갖고 계신 것과 동일한 읽기/쓰기 권한을 받습니다.",
+  "settings.option-shared-vault-owner": "다른 사람의 vault 동기화하기",
+  "settings.option-shared-vault-owner-desc": "나를 초대한 vault 소유자의 계정 이름입니다. 이 vault를 직접 소유하고 있다면 비워두세요.",
+  "settings.placeholder-shared-vault-owner": "소유자 계정 이름",
+  "settings.option-leave-shared-vault": "이 공유 vault 나가기",
+  "settings.option-leave-shared-vault-desc": "접근 권한을 제거합니다 — 다시 필요하면 소유자에게 재초대를 요청하세요.",
+  "settings.msg-left-shared-vault": "공유 vault에서 나갔습니다.",
+  "settings.msg-leave-shared-vault-failed": "나가기 실패: {{error}}",
+  "settings.vault-share-title": "\"{{vaultName}}\" 공유 관리",
+  "settings.vault-share-desc":
+    "여기서 초대한 사람은 이미 갖고 계신 것과 동일한 완전한 읽기/쓰기 동기화 권한을 받습니다 — 별도의 읽기 전용 역할은 없습니다. 이 vault가 종단간 암호화를 쓴다면, 암호는 자동으로 전달되지 않으니 따로 알려주세요.",
+  "settings.vault-share-invite": "이메일로 초대",
+  "settings.vault-share-email-placeholder": "이메일",
+  "settings.vault-share-invite-button": "초대",
+  "settings.vault-share-invite-failed": "초대 실패: {{error}}",
+  "settings.vault-share-none": "아직 아무와도 공유하지 않았습니다",
+  "settings.vault-share-accepted": "수락됨",
+  "settings.vault-share-pending": "초대 대기 중",
+  "settings.vault-share-remove": "제거",
+  "settings.vault-share-remove-failed": "제거 실패: {{error}}",
+  "settings.vault-share-load-failed": "공유 목록을 불러오지 못했습니다: {{error}}",
+  "plugins.publish.msg-not-available-for-shared-vault":
+    "공유된 vault에서는 아직 게재(Publish)를 지원하지 않습니다 — vault 소유자({{owner}})만 게재를 관리할 수 있습니다.",
 };

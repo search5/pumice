@@ -1503,4 +1503,79 @@ export class SyncClient {
       throw new Error(`share/accept failed: ${response.status}\n${errText}`);
     }
   }
+
+  // ─── Vault sync sharing (see 14_vault_sharing_설계.md) ────────────────────────────────────
+  // Distinct from Share: LIST/INVITE/REMOVE/ACCEPT above, which grant access to a *published
+  // site*, not to the vault's own sync data. Owner-only (invite/list/remove) vs.
+  // self-acting (leave/sharedWithMe) mirrors web.py's VaultContext-scoped vs. plain-authenticated
+  // route split.
+
+  public async inviteVaultShare(email: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/invite`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName(), email }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/invite failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  public async listVaultShares(): Promise<{ uid: string; email: string; accepted: boolean; createdAtMs: number }[]> {
+    const url = `${this.getPublishHost()}/api/vault/share/list`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName() }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/list failed: ${response.status}\n${errText}`);
+    }
+    const res = (await response.json()) as { shares?: { uid: string; email: string; accepted: boolean; createdAtMs: number }[] };
+    return res.shares || [];
+  }
+
+  public async removeVaultShare(shareUid: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/remove`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName(), share_uid: shareUid }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/remove failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  // The caller here (not the vault's owner -- this is what makes it different from
+  // removeVaultShare above) is leaving a vault shared TO them, identified by the owner's own
+  // account name plus this local folder's name (still the vault_id convention, see
+  // settings.ts's sharedVaultOwner).
+  public async leaveSharedVault(ownerUsername: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/leave`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, ownerUsername, vaultId: this.vault.getName() }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/leave failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  public async listSharedWithMe(): Promise<{ ownerUsername: string; vaultId: string; accepted: boolean; createdAtMs: number }[]> {
+    const url = `${this.getPublishHost()}/api/vault/shared-with-me`;
+    const response = await this.httpFetch(url, {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${this.token}` },
+    });
+    if (!response.ok) return [];
+    const res = (await response.json()) as { vaults?: { ownerUsername: string; vaultId: string; accepted: boolean; createdAtMs: number }[] };
+    return res.vaults || [];
+  }
 }

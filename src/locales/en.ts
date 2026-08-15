@@ -210,4 +210,31 @@ export const en: Record<string, string> = {
   "settings.label-checking": "Checking...",
   "settings.msg-connection-success": "Server connection successful",
   "settings.msg-connection-failed": "Server connection failed: {{error}}",
+
+  // Vault sharing (see 14_vault_sharing_설계.md)
+  "settings.heading-vault-sharing": "Vault sharing",
+  "settings.option-manage-sharing": "Manage sharing…",
+  "settings.option-manage-sharing-desc": "Invite other accounts to sync this vault -- they get the same full read/write access you have.",
+  "settings.option-shared-vault-owner": "Sync someone else's vault",
+  "settings.option-shared-vault-owner-desc": "The account name of the vault owner who invited you. Leave empty if you own this vault yourself.",
+  "settings.placeholder-shared-vault-owner": "Owner's account name",
+  "settings.option-leave-shared-vault": "Leave this shared vault",
+  "settings.option-leave-shared-vault-desc": "Removes your access -- ask the owner to re-invite you if you need it back.",
+  "settings.msg-left-shared-vault": "Left the shared vault.",
+  "settings.msg-leave-shared-vault-failed": "Failed to leave: {{error}}",
+  "settings.vault-share-title": "Manage sharing for \"{{vaultName}}\"",
+  "settings.vault-share-desc":
+    "Anyone invited here gets the same full read/write sync access you have -- there's no separate view-only role. If this vault uses end-to-end encryption, share the encryption password with them separately; it's never sent automatically.",
+  "settings.vault-share-invite": "Invite by email",
+  "settings.vault-share-email-placeholder": "Email",
+  "settings.vault-share-invite-button": "Invite",
+  "settings.vault-share-invite-failed": "Invite failed: {{error}}",
+  "settings.vault-share-none": "Not shared with anyone",
+  "settings.vault-share-accepted": "Accepted",
+  "settings.vault-share-pending": "Invite pending",
+  "settings.vault-share-remove": "Remove",
+  "settings.vault-share-remove-failed": "Remove failed: {{error}}",
+  "settings.vault-share-load-failed": "Failed to load shares: {{error}}",
+  "plugins.publish.msg-not-available-for-shared-vault":
+    "Publish isn't available for a shared vault yet -- only the vault owner ({{owner}}) can manage Publish for it.",
 };

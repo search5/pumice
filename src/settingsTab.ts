@@ -4,6 +4,7 @@ import type SyncPlugin from "./main";
 import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
+import { VaultShareModal } from "./vaultShareModal";
 import { describeLiveStatus } from "./liveStatus";
 import { t } from "./i18n";
 import { shouldStopTabPropagation } from "./settingsTabKeyboard";
@@ -212,6 +213,48 @@ export class SyncSettingTab extends PluginSettingTab {
                 text.inputEl.type = "password";
                 text.inputEl.autocomplete = "off";
               });
+            },
+          },
+        ],
+      },
+      {
+        type: "group",
+        heading: t("settings.heading-vault-sharing", "Vault sharing"),
+        items: [
+          {
+            name: t("settings.option-manage-sharing", "Manage sharing…"),
+            desc: t("settings.option-manage-sharing-desc", "Invite other accounts to sync this vault -- they get the same full read/write access you have."),
+            visible: () => !this.plugin.settings.sharedVaultOwner,
+            action: () => {
+              new VaultShareModal(this.app, this.plugin).open();
+            },
+          },
+          {
+            name: t("settings.option-shared-vault-owner", "Sync someone else's vault"),
+            desc: t("settings.option-shared-vault-owner-desc", "The account name of the vault owner who invited you. Leave empty if you own this vault yourself."),
+            control: { type: "text", key: "sharedVaultOwner", placeholder: t("settings.placeholder-shared-vault-owner", "Owner's account name") },
+          },
+          {
+            name: t("settings.option-leave-shared-vault", "Leave this shared vault"),
+            desc: t("settings.option-leave-shared-vault-desc", "Removes your access -- ask the owner to re-invite you if you need it back."),
+            visible: () => Boolean(this.plugin.settings.sharedVaultOwner),
+            action: () => {
+              void (async () => {
+                const owner = this.plugin.settings.sharedVaultOwner;
+                if (!owner) return;
+                try {
+                  const client = await this.plugin.getSyncClient();
+                  await client.leaveSharedVault(owner);
+                  this.plugin.settings.sharedVaultOwner = "";
+                  await this.plugin.saveSettings();
+                  this.update();
+                  new Notice(t("settings.msg-left-shared-vault", "Left the shared vault."));
+                } catch (e: unknown) {
+                  new Notice(t("settings.msg-leave-shared-vault-failed", "Failed to leave: {{error}}", {
+                    error: e instanceof Error ? e.message : String(e),
+                  }));
+                }
+              })();
             },
           },
         ],
