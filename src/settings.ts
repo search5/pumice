@@ -1,7 +1,12 @@
 import { Platform } from "obsidian";
 import { pickDefaultDeviceName } from "./deviceName";
 
-export type ConflictResolution = "server-wins" | "client-wins" | "manual" | "merge";
+// Text files (isTextFilePath() in textFileTypes.ts) always attempt a 3-way merge first,
+// unconditionally -- this setting only decides which side wins for everything else: non-text
+// files, or a text file with no earlier synced version to merge against (see
+// syncClient.ts's downloadFileBatch()). "manual"/"merge" existed as two more values here until
+// this was simplified; both migrate to "server-wins" on load (see main.ts's loadSettings()).
+export type ConflictResolution = "server-wins" | "client-wins";
 
 // require()'s Node "os" module must stay lexically inside this Platform.isDesktop check for
 // eslint-plugin-obsidianmd's no-nodejs-modules rule -- Node built-ins don't exist at all on
@@ -87,7 +92,7 @@ export function getDefaultSettings(configDir: string): SyncPluginSettings {
     syncPluginData: false,
     ignorePatterns: defaultExcludePatterns,
 
-    conflictResolution: "merge",
+    conflictResolution: "server-wins",
 
     enableE2EE: false,
 

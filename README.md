@@ -116,7 +116,7 @@ vault on every reconnect.
 | syncPlugins | false | Sync installed community plugins' code/manifest (off by default — this syncs executable code, a bigger trust boundary than note content) |
 | syncPluginData | false | Also sync each plugin's own `data.json` (off by default — commonly holds secrets like API tokens in plaintext) |
 | ignorePatterns | see below | Path patterns excluded from sync |
-| conflictResolution | manual | Conflict resolution strategy (`manual` / `server-wins` / `client-wins` / `merge`) |
+| conflictResolution | server-wins | Which side wins for a non-text file, or a text file with nothing to merge against (`server-wins` / `client-wins`) — text files (notes, `.json`/`.css`/`.js`/`.base`/`.canvas`) always attempt a 3-way merge first, regardless of this setting |
 | enableE2EE | false | Enable end-to-end encryption |
 | publishIncludeFolders / publishExcludeFolders | - | Folders to include/exclude when publishing |
 | localSnapshotIntervalMinutes | 5 | Local snapshot interval (minutes) |

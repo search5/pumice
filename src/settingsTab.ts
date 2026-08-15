@@ -174,15 +174,16 @@ export class SyncSettingTab extends PluginSettingTab {
         items: [
           {
             name: t("settings.option-conflict-resolution", "Conflict resolution method"),
-            desc: t("settings.option-conflict-resolution-desc", "How to handle conflicts between client and server files. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded."),
+            desc: t(
+              "settings.option-conflict-resolution-desc",
+              "Text files (notes, .json, .css, .js, .base, .canvas) are always merged automatically first — this setting only decides which side wins for other file types, or for a text file with no earlier synced version to merge against. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded."
+            ),
             control: {
               type: "dropdown",
               key: "conflictResolution",
               options: {
-                manual: t("settings.option-conflict-manual", "Manual (choose yourself)"),
                 "server-wins": t("settings.option-conflict-server-wins", "Server wins"),
                 "client-wins": t("settings.option-conflict-client-wins", "Client wins"),
-                merge: t("settings.option-conflict-merge", "Auto-merge (mark real conflicts inline)"),
               } satisfies Record<ConflictResolution, string>,
             },
           },

@@ -8,7 +8,6 @@ import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
 import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPaths } from "./pluginSync";
 import { derivePluginIdsFromPaths } from "./pluginReload";
-import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 import { groupIntoBatches, runBatchedDownloads } from "./batching";
 import type { HistoryVersionEntry, PurgeResult, RemoteFileMetaWire, SyncTransport, VaultSize } from "./syncTransport";
 
@@ -601,12 +600,6 @@ export class SyncClient {
 
       await this.ensureFolderForPath(currentPath);
 
-      // bookmarks.json always merges, regardless of the configured conflictResolution --
-      // see #9_북마크_강제병합_및_기본값_개선_구현_계획.md.
-      const effectiveConflictResolution = resolveEffectiveConflictResolution(
-        currentPath, this.vault.configDir, this.settings.conflictResolution
-      );
-
       const exists = await existsByPath(this.vault, currentPath);
 
       let plainData: ArrayBuffer = file.data;
@@ -614,8 +607,8 @@ export class SyncClient {
       // as-is for the cache when E2EE is off, since it's then already the plaintext hash
       // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
       // the buffer's already in memory). Computed up front (moved ahead of the conflict
-      // check below) since the "merge" conflict mode needs this plaintext as the "remote"
-      // side of a 3-way merge, and client-wins now needs it too, to back up the losing side.
+      // check below) since the unconditional text merge attempt needs this plaintext as the
+      // "remote" side of a 3-way merge, and client-wins needs it too, to back up the losing side.
       let plainHashForCache = calculatedHash;
       if (this.settings.enableE2EE && this.settings.e2eePassword) {
         const key = await this.getE2eeKey();
@@ -623,86 +616,87 @@ export class SyncClient {
         plainHashForCache = await sha256(plainData);
       }
 
-      if (exists && effectiveConflictResolution === "client-wins") {
-        // The local file wins and is left untouched, but the losing remote edit is a real
-        // change made on another device -- back it up as a conflict copy instead of silently
-        // discarding it, the same safety net every other resolution mode gets.
-        try {
-          const conflictPath = await this.backupRemoteVersion(currentPath, plainData);
-          new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
-        } catch (backupErr) {
-          console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
-        }
-        // Deliberately not a failure -- retrying would only hit this same skip forever.
-        return true;
-      }
-
       let handledByMerge = false;
 
       if (exists) {
-        let needsBackupAndOverwrite = effectiveConflictResolution === "manual" || effectiveConflictResolution === "server-wins";
+        // Text files always attempt a 3-way merge first, regardless of settings.conflictResolution
+        // -- tryAutoMergeConflict() itself gates on isTextFilePath() (see its own comment), so
+        // this call is unconditional here (see 16_conflict_resolution_텍스트_상시병합.md). It
+        // still returns null when it genuinely can't attempt one (not text, no
+        // lastSyncedHashStore, no recorded base hash, or the base version was pruned from server
+        // history) -- that's the only remaining case where conflictResolution's
+        // server-wins/client-wins fallback applies to a text file; it always applies to a
+        // non-text file, since merge is never attempted for those at all.
+        const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
 
-        if (effectiveConflictResolution === "merge") {
-          const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
-          if (mergeAttempt === null) {
-            needsBackupAndOverwrite = true;
-          } else if (!mergeAttempt.hasConflictMarkers) {
-            // Clean merge -- local's and remote's edits didn't touch the same lines. If the
-            // result is actually identical to what the server just sent (the common case for
-            // a config-dir file like community-plugins.json when this device made no local
-            // edits since its last sync), there is no real merge to speak of -- treat it as an
-            // ordinary "adopt remote" download instead of a synthetic local edit. Doing the
-            // latter unconditionally used to rely on this write being picked up by the
-            // debounced auto-sync machinery and re-uploaded so lastSyncedHashStore would catch
-            // up; whenever that indirect re-upload didn't happen promptly, the next sync's
-            // Delta would still see this path as unresolved and re-offer it for merge, so the
-            // exact same "Auto-merged" notice kept firing every sync even though nothing had
-            // actually changed on either side.
-            const remoteText = new TextDecoder("utf-8").decode(plainData);
-            if (mergeAttempt.mergedText === remoteText) {
-              // Falls through to the ordinary "adopt remote" write below (needsBackupAndOverwrite
-              // is already false here) -- no local content is being discarded, so no backup and
-              // no synthetic-edit notice.
-            } else {
-              const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
-              // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
-              // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
-              // the merged result through the ordinary upload path on the next pass -- no
-              // special immediate-reupload plumbing needed, since this write's mtime will be
-              // newer than the server's stored version and Delta will naturally resolve it to
-              // need_upload next time.
-              await writeBinaryByPath(this.vault, currentPath, mergedData);
-              new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
-              const mergedFile = this.vault.getAbstractFileByPath(currentPath);
-              if (this.hashCache && mergedFile instanceof TFile) {
-                this.hashCache.set(mergedFile, await sha256(mergedData));
-              }
-              handledByMerge = true;
-            }
-          } else {
-            // Some region really was edited on both sides -- everything else already merged
-            // automatically; only that region is left, marked inline (git-style) for the user
-            // to resolve by hand. Back up the pre-merge local content first, same safety net
-            // as "manual", then write the merged-with-markers file itself via writeSelfPath so
-            // it doesn't immediately re-upload with unresolved markers still in it -- the
-            // user's own next edit (removing the markers) is what should trigger the next sync.
-            try {
-              await this.backupLocalVersion(currentPath);
-            } catch (backupErr) {
-              console.error(`Failed to create pre-merge backup for ${currentPath}:`, backupErr);
-            }
+        if (mergeAttempt !== null && !mergeAttempt.hasConflictMarkers) {
+          // Clean merge -- local's and remote's edits didn't touch the same lines. If the
+          // result is actually identical to what the server just sent (the common case for
+          // a config-dir file like community-plugins.json when this device made no local
+          // edits since its last sync), there is no real merge to speak of -- treat it as an
+          // ordinary "adopt remote" download instead of a synthetic local edit. Doing the
+          // latter unconditionally used to rely on this write being picked up by the
+          // debounced auto-sync machinery and re-uploaded so lastSyncedHashStore would catch
+          // up; whenever that indirect re-upload didn't happen promptly, the next sync's
+          // Delta would still see this path as unresolved and re-offer it for merge, so the
+          // exact same "Auto-merged" notice kept firing every sync even though nothing had
+          // actually changed on either side.
+          const remoteText = new TextDecoder("utf-8").decode(plainData);
+          if (mergeAttempt.mergedText !== remoteText) {
             const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
-            await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, mergedData));
-            new Notice(t("plugins.sync.msg-merge-conflict-markers", "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save", { filename: pathUtil.basename(currentPath) }));
+            // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
+            // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
+            // the merged result through the ordinary upload path on the next pass -- no
+            // special immediate-reupload plumbing needed, since this write's mtime will be
+            // newer than the server's stored version and Delta will naturally resolve it to
+            // need_upload next time.
+            await writeBinaryByPath(this.vault, currentPath, mergedData);
+            new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
             const mergedFile = this.vault.getAbstractFileByPath(currentPath);
             if (this.hashCache && mergedFile instanceof TFile) {
               this.hashCache.set(mergedFile, await sha256(mergedData));
             }
             handledByMerge = true;
           }
-        }
-
-        if (needsBackupAndOverwrite) {
+          // else: falls through to the ordinary "adopt remote" write below -- no local content
+          // is being discarded, so no backup and no synthetic-edit notice.
+        } else if (mergeAttempt !== null) {
+          // Some region really was edited on both sides -- everything else already merged
+          // automatically; only that region is left, marked inline (git-style) for the user
+          // to resolve by hand. Back up the pre-merge local content first, same safety net as
+          // the fallback path below, then write the merged-with-markers file itself via
+          // writeSelfPath so it doesn't immediately re-upload with unresolved markers still in
+          // it -- the user's own next edit (removing the markers) is what should trigger the
+          // next sync.
+          try {
+            await this.backupLocalVersion(currentPath);
+          } catch (backupErr) {
+            console.error(`Failed to create pre-merge backup for ${currentPath}:`, backupErr);
+          }
+          const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
+          await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, mergedData));
+          new Notice(t("plugins.sync.msg-merge-conflict-markers", "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save", { filename: pathUtil.basename(currentPath) }));
+          const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+          if (this.hashCache && mergedFile instanceof TFile) {
+            this.hashCache.set(mergedFile, await sha256(mergedData));
+          }
+          handledByMerge = true;
+        } else if (this.settings.conflictResolution === "client-wins") {
+          // No merge was attempted (non-text, or a text file with nothing to merge against) --
+          // the local file wins and is left untouched, but the losing remote edit is a real
+          // change made on another device: back it up as a conflict copy instead of silently
+          // discarding it, the same safety net server-wins gets below.
+          try {
+            const conflictPath = await this.backupRemoteVersion(currentPath, plainData);
+            new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
+          } catch (backupErr) {
+            console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
+          }
+          // Deliberately not a failure -- retrying would only hit this same skip forever.
+          return true;
+        } else {
+          // "server-wins" (also the fallback for a text file merge couldn't be attempted for):
+          // back up local, then fall through to the ordinary adopt-remote write below.
           try {
             const conflictPath = await this.backupLocalVersion(currentPath);
             new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));

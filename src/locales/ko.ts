@@ -177,11 +177,9 @@ export const ko: Record<string, string> = {
   "status.sync-error": "동기화 오류",
 
   "settings.option-conflict-resolution": "충돌 해결 방식",
-  "settings.option-conflict-resolution-desc": "클라이언트와 서버의 파일이 충돌할 때 처리 방법입니다. 어느 쪽을 택하든, 선택되지 않은 쪽은 항상 .sync-conflict 백업 파일로 남고 조용히 버려지지 않습니다.",
-  "settings.option-conflict-manual": "수동 (직접 선택)",
+  "settings.option-conflict-resolution-desc": "텍스트 파일(노트, .json, .css, .js, .base, .canvas)은 항상 먼저 자동으로 병합됩니다 — 이 설정은 그 외 파일 형식이거나, 병합 기준이 될 이전 동기화 버전이 없는 텍스트 파일의 경우에만 어느 쪽이 우선할지를 결정합니다. 어느 쪽을 택하든, 선택되지 않은 쪽은 항상 .sync-conflict 백업 파일로 남고 조용히 버려지지 않습니다.",
   "settings.option-conflict-server-wins": "서버 우선",
   "settings.option-conflict-client-wins": "클라이언트 우선",
-  "settings.option-conflict-merge": "자동 병합 (진짜 충돌 부분만 표시)",
 
   "settings.option-e2ee": "엔드투엔드 암호화 (E2EE)",
   "settings.option-e2ee-desc": "서버 전송 전 로컬 기기에서 파일을 대칭 키(AES-256-GCM)로 암호화합니다.",

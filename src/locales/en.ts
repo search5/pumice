@@ -179,11 +179,9 @@ export const en: Record<string, string> = {
   "status.sync-error": "Sync error",
 
   "settings.option-conflict-resolution": "Conflict resolution method",
-  "settings.option-conflict-resolution-desc": "How to handle conflicts between client and server files. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded.",
-  "settings.option-conflict-manual": "Manual (choose yourself)",
+  "settings.option-conflict-resolution-desc": "Text files (notes, .json, .css, .js, .base, .canvas) are always merged automatically first — this setting only decides which side wins for other file types, or for a text file with no earlier synced version to merge against. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded.",
   "settings.option-conflict-server-wins": "Server wins",
   "settings.option-conflict-client-wins": "Client wins",
-  "settings.option-conflict-merge": "Auto-merge (mark real conflicts inline)",
 
   "settings.option-e2ee": "End-to-end encryption (E2EE)",
   "settings.option-e2ee-desc": "Encrypts files with a symmetric key (AES-256-GCM) on your local device before sending them to the server.",

@@ -196,7 +196,7 @@ export default class SyncPlugin extends Plugin {
     await this.contentHashCache.init();
 
     // Tracks the last content hash both this device and the server agreed on per path -- the
-    // "base" version the "merge" conflictResolution mode diffs local/remote changes against.
+    // "base" version the always-on 3-way text merge diffs local/remote changes against.
     this.lastSyncedHashStore = new LastSyncedHashStore();
     await this.lastSyncedHashStore.init();
 
@@ -559,6 +559,20 @@ export default class SyncPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const data = ((await this.loadData()) as PersistedPluginData | null) || {};
     this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
+
+    // One-time migration: ConflictResolution narrowed from 4 values to 2 -- "manual"/"merge"
+    // removed since text files now always attempt a 3-way merge unconditionally (see
+    // 16_conflict_resolution_텍스트_상시병합.md). Both legacy values already behaved exactly
+    // like today's "server-wins" for whatever they fell back to (non-text, or no recorded base
+    // hash to merge against), so this is lossless there; text files actually improve (they now
+    // always try to merge, where before only "merge" mode did). Cast needed since the legacy
+    // strings no longer typecheck as ConflictResolution.
+    const legacyConflictResolution = this.settings.conflictResolution as string;
+    if (legacyConflictResolution === "manual" || legacyConflictResolution === "merge") {
+      this.settings.conflictResolution = "server-wins";
+      await this.savePluginData();
+    }
+
     this.deletedFiles = data.deletedFiles || {};
     this.lastKnownPluginPaths = data.lastKnownPluginPaths || {};
     this.lastKnownChangeId = data.lastKnownChangeId || 0;

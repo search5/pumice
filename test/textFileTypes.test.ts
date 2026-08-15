@@ -7,7 +7,7 @@ import {
 } from "../src/textFileTypes";
 
 describe("PLAINTEXT_EXTENSIONS / isTextFilePath (merge-eligibility, unaffected by history-diff scope)", () => {
-  it("still includes canvas -- the 'merge' conflictResolution mode is a pumice-only feature with no real Sync equivalent to match", () => {
+  it("still includes canvas -- the always-on 3-way text merge is a pumice-only feature with no real Sync equivalent to match", () => {
     expect(PLAINTEXT_EXTENSIONS).toContain("canvas");
   });
 

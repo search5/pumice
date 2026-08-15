@@ -113,7 +113,7 @@ WebSocket 연결을 하나 계속 열어둡니다 — 옵시디언 공식 Sync�
 | syncPlugins | false | 설치된 커뮤니티 플러그인의 코드/매니페스트 동기화(기본 꺼짐 — 노트 내용보다 신뢰 범위가 큰 실행 코드라서) |
 | syncPluginData | false | 각 플러그인 자체의 `data.json`까지 동기화(기본 꺼짐 — 흔히 API 토큰 등 비밀값이 평문으로 들어있음) |
 | ignorePatterns | 아래 참고 | 동기화에서 제외할 경로 패턴 |
-| conflictResolution | manual | 충돌 해결 전략(`manual` / `server-wins` / `client-wins` / `merge`) |
+| conflictResolution | server-wins | 비텍스트 파일, 또는 병합 기준이 없는 텍스트 파일에서 어느 쪽이 우선할지(`server-wins` / `client-wins`) — 텍스트 파일(노트, `.json`/`.css`/`.js`/`.base`/`.canvas`)은 이 설정과 무관하게 항상 먼저 3-way 병합을 시도합니다 |
 | enableE2EE | false | 종단간 암호화 활성화 |
 | publishIncludeFolders / publishExcludeFolders | - | 게재 시 포함/제외할 폴더 |
 | localSnapshotIntervalMinutes | 5 | 로컬 스냅샷 간격(분) |
