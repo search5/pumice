@@ -75,6 +75,12 @@ export interface PublishSiteOptions {
   googleAnalytics: string;
 }
 
+// Real Obsidian's apiCustomUrl(url, redirect) response shape (see 26_커스텀_도메인_지원.md).
+export interface CustomDomainConfig {
+  url: string;
+  redirect: boolean;
+}
+
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
 // so the Vault API has no way to reach them at all). This follows Obsidian's official plugin
@@ -1487,6 +1493,21 @@ export class SyncClient {
   public async setSiteOptions(options: Partial<PublishSiteOptions>): Promise<PublishSiteOptions> {
     const res = await this.postToBackend<{ options: PublishSiteOptions }>("api/options", { options });
     return res.options;
+  }
+
+  // Custom domain (see 26_커스텀_도메인_지원.md) -- unblocks publish.js/googleAnalytics, which
+  // real Obsidian only activates once a custom domain is configured. Matches real Obsidian's own
+  // apiCustomUrl(url, redirect): POST /api/customurl {token, id, host, url, redirect}, GET (no
+  // url) / SET (with url) sharing one endpoint, same convention as site options above. `host` is
+  // this client's own server instance host:port -- same as setSlug, received by the server but
+  // not stored/used.
+  public async getCustomDomain(): Promise<CustomDomainConfig> {
+    return this.postToBackend<CustomDomainConfig>("api/customurl", {});
+  }
+
+  public async setCustomDomain(url: string, redirect: boolean): Promise<CustomDomainConfig> {
+    const host = `${this.settings.serverHost}:${this.settings.serverPort}`;
+    return this.postToBackend<CustomDomainConfig>("api/customurl", { host, url, redirect });
   }
 
   // Slug: GET slugs map

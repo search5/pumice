@@ -679,6 +679,19 @@ class SiteOptionsSection extends ModalSection {
       saveBtn.addEventListener("click", () => void this.saveSlug());
     });
 
+    // Custom domain (see 26_커스텀_도메인_지원.md) -- separate modal rather than an inline
+    // field like the slug above, since it needs a domain string + a redirect toggle + setup
+    // guidance (matches real Obsidian's own separate "configureCustomDomainSection" sub-dialog).
+    const customDomainSetting = this.el.createDiv("setting-item");
+    customDomainSetting.createDiv("setting-item-info", el => {
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-custom-domain", "Custom domain") });
+      el.createDiv({ cls: "setting-item-description", text: t("plugins.publish.option-custom-domain-desc", "Use your own domain for this site.") });
+    });
+    customDomainSetting.createDiv("setting-item-control", el => {
+      const btn = el.createEl("button", { text: t("interface.button-manage", "Configure") });
+      btn.addEventListener("click", () => new CustomDomainModal(modal.app, modal.plugin).open());
+    });
+
     // General (matches real Obsidian's "General" group in the Change site options dialog)
     new Setting(this.el).setName(t("plugins.publish.label-site-general", "General")).setHeading();
     new Setting(this.el)
@@ -1027,6 +1040,67 @@ class ManageFoldersModal extends Modal {
   onClose() {
     this.contentEl.empty();
     this.onCloseCallback?.();
+  }
+}
+
+// ─── CustomDomainModal ────────────────────────────────────────────────────────
+// See 26_커스텀_도메인_지원.md -- real Obsidian doesn't provision TLS certificates itself
+// (confirmed via Custom domains.md: CloudFlare or your own reverse proxy handles that), so this
+// modal is purely "which hostname does this vault answer to" bookkeeping, not a cert wizard.
+
+class CustomDomainModal extends Modal {
+  private urlInput!: HTMLInputElement;
+  private redirectToggle!: ToggleComponent;
+
+  constructor(app: App, private plugin: SyncPlugin) {
+    super(app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText(t("plugins.publish.label-custom-domain", "Custom domain"));
+
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t(
+        "plugins.publish.msg-custom-domain-help",
+        "Point your domain's CNAME at this server and enable Full SSL/TLS at your provider (e.g. CloudFlare) before saving here."
+      ),
+    });
+
+    new Setting(contentEl)
+      .setName(t("plugins.publish.option-custom-domain-url", "Domain"))
+      .addText(text => { this.urlInput = text.inputEl; });
+    new Setting(contentEl)
+      .setName(t("plugins.publish.option-custom-domain-redirect", "Redirect to your custom domain"))
+      .addToggle(toggle => { this.redirectToggle = toggle; });
+
+    try {
+      const client = await this.plugin.getSyncClient();
+      const current = await client.getCustomDomain();
+      this.urlInput.value = current.url;
+      this.redirectToggle.setValue(current.redirect);
+    } catch { /* ignore */ }
+
+    new Setting(contentEl).addButton(btn =>
+      btn.setButtonText(t("dialogue.button-save", "Save")).setCta().onClick(() => void this.save())
+    );
+  }
+
+  private async save() {
+    try {
+      const client = await this.plugin.getSyncClient();
+      await client.setCustomDomain(this.urlInput.value.trim(), this.redirectToggle.getValue());
+      new Notice(t("plugins.publish.msg-custom-domain-saved", "Custom domain saved."));
+      this.close();
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 

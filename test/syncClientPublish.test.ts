@@ -407,6 +407,42 @@ describe("SyncClient.getSiteOptions / setSiteOptions", () => {
   });
 });
 
+// Custom domain (see 26_커스텀_도메인_지원.md) -- unblocks publish.js/googleAnalytics, which
+// real Obsidian only activates once a custom domain is configured.
+describe("SyncClient.getCustomDomain / setCustomDomain", () => {
+  it("getCustomDomain posts {id, token} and returns {url, redirect}", async () => {
+    mockHttp({ status: 200, json: { url: "notes.example.com", redirect: true } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const result = await client.getCustomDomain();
+
+    expect(result).toEqual({ url: "notes.example.com", redirect: true });
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/customurl");
+    expect(JSON.parse(call.body as string)).toEqual({ id: "myvault", token: "test-token" });
+  });
+
+  it("setCustomDomain posts {id, token, host, url, redirect}", async () => {
+    mockHttp({ status: 200, json: { url: "notes.example.com", redirect: true } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const result = await client.setCustomDomain("notes.example.com", true);
+
+    expect(result).toEqual({ url: "notes.example.com", redirect: true });
+    const call = lastCall();
+    expect(JSON.parse(call.body as string)).toEqual({
+      id: "myvault", token: "test-token", host: "localhost:8080", url: "notes.example.com", redirect: true,
+    });
+  });
+
+  it("setCustomDomain throws on 409 (hostname already claimed)", async () => {
+    mockHttp({ status: 409, text: "taken" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.setCustomDomain("taken.example.com", false)).rejects.toThrow(/api\/customurl failed: 409/);
+  });
+});
+
 describe("SyncClient.downloadPublishedFile", () => {
   it("posts {id, token, path} to /api/download and returns the bytes", async () => {
     const data = new TextEncoder().encode("published content").buffer;
