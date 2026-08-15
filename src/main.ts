@@ -7,6 +7,7 @@ import { WsSyncTransport, WsTransportError, HEARTBEAT_CHECK_INTERVAL_MS, type Pu
 import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
 import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
+import { isPublishSupportedFile } from "./publishEligibility";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
 import { ContentHashCache } from "./contentHashCache";
@@ -388,6 +389,7 @@ export default class SyncPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file, source) => {
         if (!(file instanceof TFile)) return; // exclude TFolder
+        if (!isPublishSupportedFile(file.extension, file.name)) return; // matches real Obsidian's isFileSupported
         const publishFileLabel = t("plugins.publish.action-publish-file", "Publish current file");
         menu.addItem((item) => {
           item

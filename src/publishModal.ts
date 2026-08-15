@@ -5,7 +5,10 @@ import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { classifyExistingFile, DiffType, isNewFileEligible, parsePublishFlag, scanSingleFile } from "./publishEligibility";
+import {
+  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parsePublishFlag,
+  resolvePublishFlag, scanSingleFile,
+} from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -18,9 +21,14 @@ interface DiffItem {
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
 
-function getPublishFlag(app: App, file: TFile): boolean | null {
+// Exported for main.ts's file-menu "Publish current file" registration and the modal's own
+// single-file branch below, so both consult the exact same folder-fallback logic -- a
+// divergence between two separately-reimplemented copies is exactly the shape of bug an
+// earlier commit (adb3397) had to fix once already.
+export function getPublishFlag(app: App, file: TFile, includeFolders: string[], excludeFolders: string[]): boolean | null {
   const cache = app.metadataCache.getFileCache(file);
-  return parsePublishFlag(cache?.frontmatter?.publish);
+  const explicit = parsePublishFlag(cache?.frontmatter?.publish);
+  return resolvePublishFlag(explicit, isUnderFolder(file.path, excludeFolders), isUnderFolder(file.path, includeFolders));
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {
@@ -37,16 +45,19 @@ function isUnderFolder(path: string, folders: string[]): boolean {
 const HASH_CONCURRENCY = 8;
 
 // ─── Delta computation ──────────────────────────────────────────────────────
-// Eligibility is driven purely by an explicit publish:true/false in each file's own
-// frontmatter (see classifyExistingFile/isNewFileEligible in publishEligibility.ts) --
-// "excluded folders" still take priority (a hard filter, unrelated to eligibility), but
-// "included folders" no longer grants eligibility to a file with no publish field at all.
+// Matches real Obsidian Publish's own scanForChanges exactly (see
+// 18_publish_게재_자격_실제_옵시디언과_동일화.md): a file is only ever dropped from
+// consideration by an explicit (or folder-fallback-resolved) publishFlag === false --
+// getPublishFlag() itself handles the exclude-then-include folder fallback now, so there's no
+// separate hard pre-filter here the way there used to be (that hard filter incorrectly skipped
+// an excluded-folder file even when its own frontmatter explicitly said publish: true, which
+// real Obsidian never does -- frontmatter always wins).
 async function scanForChanges(
   app: App,
   client: SyncClient,
+  includeFolders: string[],
   excludeFolders: string[],
-  hashCache: ContentHashCache,
-  focusFile?: TFile
+  hashCache: ContentHashCache
 ): Promise<DiffItem[]> {
   const serverFiles = await client.listFiles();
   const serverMap = new Map<string, string>();
@@ -63,55 +74,46 @@ async function scanForChanges(
     serverHash: string;
     localFile: TFile;
     publishFlag: boolean | null;
-    isFocused: boolean;
   }
   const candidates: Candidate[] = [];
 
   for (const [serverPath, serverHash] of serverMap) {
     processedPaths.add(serverPath);
-    if (isUnderFolder(serverPath, excludeFolders)) continue;
 
     const abstract = app.vault.getAbstractFileByPath(serverPath);
     const localFile = abstract instanceof TFile ? abstract : null;
 
-    if (!localFile) {
-      diffs.push({ path: serverPath, serverHash, type: "deleted", checked: true });
+    const publishFlag = localFile ? getPublishFlag(app, localFile, includeFolders, excludeFolders) : false;
+    if (!localFile || publishFlag === false) {
+      diffs.push({ path: serverPath, serverHash, type: "deleted", checked: false });
       continue;
     }
 
-    candidates.push({
-      path: serverPath,
-      serverHash,
-      localFile,
-      publishFlag: getPublishFlag(app, localFile),
-      isFocused: focusFile?.path === serverPath,
-    });
+    candidates.push({ path: serverPath, serverHash, localFile, publishFlag });
   }
 
-  const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem | null> => {
+  const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem> => {
     const localHash = await hashCache.getHash(c.localFile, async () => {
       const data = await app.vault.readBinary(c.localFile);
       return computeHash(data);
     });
 
-    const type = classifyExistingFile({
+    const { type, checked } = classifyExistingFile({
       publishFlag: c.publishFlag,
       contentChanged: localHash !== c.serverHash,
-      isFocused: c.isFocused,
     });
-    return type ? { path: c.path, serverHash: c.serverHash, type, checked: type !== "unchanged" } : null;
+    return { path: c.path, serverHash: c.serverHash, type, checked };
   });
-  for (const d of candidateDiffs) if (d) diffs.push(d);
+  diffs.push(...candidateDiffs);
 
+  // isFileSupported-equivalent gate only applies to this "not yet on the server" pass -- a file
+  // already on the server already passed this check the first time it was uploaded.
   const allLocalFiles = app.vault.getFiles();
   for (const localFile of allLocalFiles) {
     if (processedPaths.has(localFile.path)) continue;
-    if (isUnderFolder(localFile.path, excludeFolders)) continue;
-    const isFocused = focusFile?.path === localFile.path;
-    const eligible = isNewFileEligible(getPublishFlag(app, localFile));
-    if (eligible || isFocused) {
-      diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: true });
-    }
+    if (!isPublishSupportedFile(localFile.extension, localFile.name)) continue;
+    const c = classifyNewFile(getPublishFlag(app, localFile, includeFolders, excludeFolders));
+    if (c) diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: c.checked });
   }
 
   return diffs;
@@ -1174,25 +1176,20 @@ export class PublishModal extends Modal {
       // "Publish current file" (this.focusFile set, opened from the file context menu) is a single
       // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
       // walk the way the general "Publish changes" entry point (no focus file) does.
+      const includeFolders = this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean);
+      const excludeFolders = this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean);
+
       if (this.focusFile) {
-        const publishFlag = getPublishFlag(this.app, this.focusFile);
-        if (publishFlag === null) {
-          // Neither true nor false: publishing (or cancelling) a file with no explicit
-          // frontmatter at all would go live/gone on the server yet be invisible to future
-          // folder-wide scans (scanForChanges is frontmatter-driven) — require the frontmatter
-          // to be set BEFORE acting rather than guessing.
-          this.showError(t("plugins.publish.msg-set-publish-frontmatter-first", 'Add "publish: true" or "publish: false" to this file\'s frontmatter first.'));
-          this.reviewChangesSection.setDiffs([], this.focusFile);
-        } else {
-          // true -> publish; false -> cancel (unpublish) -- the server's remove endpoint is a
-          // harmless no-op if the file was never actually published, so there's no need to
-          // fetch the server's file list first just to check.
-          this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile.path, publishFlag), this.focusFile);
-        }
+        // true/false/null all have well-defined behavior now (matches real Obsidian's own
+        // single-file action, which never blocks on an undetermined flag either) -- the
+        // server's remove endpoint is a harmless no-op if the file was never actually
+        // published, so there's no need to fetch the server's file list first just to check.
+        const publishFlag = getPublishFlag(this.app, this.focusFile, includeFolders, excludeFolders);
+        this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile.path, publishFlag), this.focusFile);
       } else {
         const diffs = await scanForChanges(
           this.app, client ?? (client = await this.plugin.getSyncClient()),
-          this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
+          includeFolders, excludeFolders,
           this.plugin.contentHashCache
         );
         this.reviewChangesSection.setDiffs(diffs, this.focusFile);
