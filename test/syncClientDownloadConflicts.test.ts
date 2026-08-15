@@ -536,3 +536,52 @@ describe("SyncClient downloadFileBatch -- merge conflict resolution", () => {
     expect(dec(vault.modifyBinary.mock.calls[0][1] as ArrayBuffer)).toBe(remote);
   });
 });
+
+describe("SyncClient downloadFileBatch -- conflict backup path stays in the original file's directory", () => {
+  // Regression guard: every other test in this file uses a top-level path ("note.md"), which
+  // can't tell a correctly-scoped conflict path from one that accidentally collapsed to just the
+  // vault root -- both would match CONFLICT_BACKUP_RE identically. This exercises a nested path
+  // specifically to prove the backup lands next to the original file, not at the vault root.
+  const path = "folder/sub/note.md";
+  const NESTED_CONFLICT_BACKUP_RE = /^folder\/sub\/note\.sync-conflict-.*\.md$/;
+
+  it("server-wins backs up the local version into the same folder as the original", async () => {
+    const local = "local content";
+    const remote = "remote content";
+    const remoteData = enc(remote);
+    const remoteHash = await sha256(remoteData);
+
+    const file = new TFile();
+    file.path = path;
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockImplementation((p: string) => (p === path ? file : null));
+    vault.readBinary.mockResolvedValue(enc(local));
+
+    const { transport } = makeDownloadTransport(remoteData, remoteHash, 42);
+    const client = makeClientEx(transport, vault, fakeFileManager(), { conflictResolution: "server-wins" });
+
+    await client.applyPushedFileChange({ path, modified_at_ms: 42, size_bytes: remoteData.byteLength, content_hash: remoteHash, is_deleted: false });
+
+    const [backupPath] = vault.createBinary.mock.calls[0] as [string, ArrayBuffer];
+    expect(backupPath).toMatch(NESTED_CONFLICT_BACKUP_RE);
+  });
+
+  it("client-wins backs up the remote version into the same folder as the original", async () => {
+    const remote = "remote content";
+    const remoteData = enc(remote);
+    const remoteHash = await sha256(remoteData);
+
+    const file = new TFile();
+    file.path = path;
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockImplementation((p: string) => (p === path ? file : null));
+
+    const { transport } = makeDownloadTransport(remoteData, remoteHash, 5);
+    const client = makeClientEx(transport, vault, fakeFileManager(), { conflictResolution: "client-wins" });
+
+    await client.applyPushedFileChange({ path, modified_at_ms: 5, size_bytes: remoteData.byteLength, content_hash: remoteHash, is_deleted: false });
+
+    const [backupPath] = vault.createBinary.mock.calls[0] as [string, ArrayBuffer];
+    expect(backupPath).toMatch(NESTED_CONFLICT_BACKUP_RE);
+  });
+});
