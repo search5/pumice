@@ -3,6 +3,7 @@ import {
   classifyExistingFile,
   classifyNewFile,
   isPublishSupportedFile,
+  parseAliases,
   parseDescription,
   parseImagePath,
   parsePermalink,
@@ -124,6 +125,43 @@ describe("parseImagePath", () => {
   it("returns null for a non-string value", () => {
     expect(parseImagePath(1)).toBeNull();
     expect(parseImagePath(false)).toBeNull();
+  });
+});
+
+// parseAliases -- real Obsidian's Publish redirects old/removed note URLs by registering each
+// alias (case-insensitively) into a lookup map, consulted as the last-resort fallback after both
+// permalink and literal-path routing miss (confirmed via obsidian.asar: Site.getLinkpathDest's
+// `this.aliases[e.toLowerCase()]` fallback -- see 22_aliases_리다이렉트_및_파비콘_자동감지.md).
+// A single string is normalized to a one-element array (frontmatter YAML sometimes has a bare
+// string for a List-type property); empty/whitespace-only entries are dropped.
+describe("parseAliases", () => {
+  it("returns a string array unchanged (after trimming each entry)", () => {
+    expect(parseAliases(["Guides/Making friends", " Developing friendships "]))
+      .toEqual(["Guides/Making friends", "Developing friendships"]);
+  });
+
+  it("normalizes a bare string into a one-element array", () => {
+    expect(parseAliases("Guides/Making friends")).toEqual(["Guides/Making friends"]);
+  });
+
+  it("drops empty/whitespace-only entries", () => {
+    expect(parseAliases(["a", "", "  ", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("returns null for an empty array, empty string, null, or undefined", () => {
+    expect(parseAliases([])).toBeNull();
+    expect(parseAliases("")).toBeNull();
+    expect(parseAliases(null)).toBeNull();
+    expect(parseAliases(undefined)).toBeNull();
+  });
+
+  it("returns null for a non-string, non-array value", () => {
+    expect(parseAliases(1)).toBeNull();
+    expect(parseAliases(true)).toBeNull();
+  });
+
+  it("drops non-string entries within an array", () => {
+    expect(parseAliases(["a", 1, null, "b"])).toEqual(["a", "b"]);
   });
 });
 

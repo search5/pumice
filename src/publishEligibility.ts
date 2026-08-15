@@ -91,6 +91,21 @@ export function parseImagePath(value: unknown): string | null {
 }
 
 /**
+ * Parses a raw `aliases` frontmatter value for Publish's old-URL redirect feature (see
+ * 22_aliases_리다이렉트_및_파비콘_자동감지.md -- confirmed via obsidian.asar: Site's aliases
+ * lookup map is built from exactly this shape). Accepts either a string array (the normal YAML
+ * list form) or a single bare string (normalized to a one-element array, since a List-type
+ * property's raw frontmatter value is sometimes just a plain string). Each entry is trimmed;
+ * empty/whitespace-only or non-string entries are dropped. Returns null when nothing is left.
+ */
+export function parseAliases(value: unknown): string[] | null {
+  const raw = typeof value === "string" ? [value] : Array.isArray(value) ? value : null;
+  if (!raw) return null;
+  const cleaned = raw.filter((v): v is string => typeof v === "string").map(v => v.trim()).filter(v => v.length > 0);
+  return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
  * Real Obsidian's getPublishFlag folder-fallback: an explicit frontmatter value always wins
  * outright (checked upstream by the caller -- this function is only reached when
  * `explicitFlag` is null, i.e. the frontmatter has no publish field at all, which is every

@@ -211,19 +211,39 @@ describe("SyncClient.publishFile", () => {
     expect(lastCall().headers?.["obs-image"]).toBeUndefined();
   });
 
-  it("sends all three meta headers together when all are given", async () => {
+  it("sends all four meta headers together when all are given", async () => {
     mockHttp({ status: 200 });
     const vault = fakeVault();
     vault.getAbstractFileByPath.mockReturnValue(null);
     vault.adapter.readBinary.mockResolvedValue(new TextEncoder().encode("hello").buffer);
     const client = makeClient(fakeTransport(), vault, fakeFileManager());
 
-    await client.publishFile("note.md", { permalink: "p", description: "d", image: "i.png" });
+    await client.publishFile("note.md", {
+      permalink: "p", description: "d", image: "i.png", aliases: ["Old/Path", "Older/Path"],
+    });
 
     const call = lastCall();
     expect(call.headers?.["obs-permalink"]).toBe("p");
     expect(call.headers?.["obs-description"]).toBe("d");
     expect(call.headers?.["obs-image"]).toBe("i.png");
+    expect(call.headers?.["obs-aliases"]).toBe(encodeURIComponent(JSON.stringify(["Old/Path", "Older/Path"])));
+  });
+
+  it("omits the obs-aliases header when aliases is missing, null, or empty", async () => {
+    mockHttp({ status: 200 });
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    vault.adapter.readBinary.mockResolvedValue(new TextEncoder().encode("hello").buffer);
+    const client = makeClient(fakeTransport(), vault, fakeFileManager());
+
+    await client.publishFile("note.md");
+    expect(lastCall().headers?.["obs-aliases"]).toBeUndefined();
+
+    await client.publishFile("note.md", { aliases: null });
+    expect(lastCall().headers?.["obs-aliases"]).toBeUndefined();
+
+    await client.publishFile("note.md", { aliases: [] });
+    expect(lastCall().headers?.["obs-aliases"]).toBeUndefined();
   });
 });
 

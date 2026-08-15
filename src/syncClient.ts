@@ -48,12 +48,14 @@ export type SyncLogCallback = (level: "debug" | "warn", message: string) => void
 export type { HistoryVersionEntry } from "./syncTransport";
 
 // Optional per-file frontmatter overrides publishFile() forwards to the server as obs-* headers
-// (see 19_permalink_지원.md / 20_description_image_지원.md) -- grouped into one options object
-// rather than positional params since a third field (image) made positional args unreadable.
+// (see 19_permalink_지원.md / 20_description_image_지원.md /
+// 22_aliases_리다이렉트_및_파비콘_자동감지.md) -- grouped into one options object rather than
+// positional params since a third field (image) already made positional args unreadable.
 export interface PublishFileMeta {
   permalink?: string | null;
   description?: string | null;
   image?: string | null;
+  aliases?: string[] | null;
 }
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
@@ -1335,6 +1337,8 @@ export class SyncClient {
         ...(meta?.permalink ? { "obs-permalink": encodeURIComponent(meta.permalink) } : {}),
         ...(meta?.description ? { "obs-description": encodeURIComponent(meta.description) } : {}),
         ...(meta?.image ? { "obs-image": encodeURIComponent(meta.image) } : {}),
+        ...(meta?.aliases && meta.aliases.length > 0
+          ? { "obs-aliases": encodeURIComponent(JSON.stringify(meta.aliases)) } : {}),
       },
       body: data,
     });

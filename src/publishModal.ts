@@ -6,8 +6,9 @@ import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import {
-  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseDescription,
-  parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag, scanSingleFile,
+  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseAliases,
+  parseDescription, parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag,
+  scanSingleFile,
 } from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -49,6 +50,15 @@ export function getPublishDescription(app: App, file: TFile): string | null {
 export function getPublishImage(app: App, file: TFile): string | null {
   const cache = app.metadataCache.getFileCache(file);
   return parseImagePath(cache?.frontmatter?.image);
+}
+
+// Used server-side to redirect visitors from a note's old/removed URL to wherever it lives now
+// -- see 22_aliases_리다이렉트_및_파비콘_자동감지.md. Real Obsidian requires the alias to be the
+// full vault-relative path of the old location (a bare filename won't redirect), but that's a
+// user-authoring requirement documented in Permalinks.md, not something this parser enforces.
+export function getPublishAliases(app: App, file: TFile): string[] | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseAliases(cache?.frontmatter?.aliases);
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {
@@ -1087,6 +1097,7 @@ class UploadProgressSection extends ModalSection {
             permalink: getPublishPermalink(this.modal.app, file),
             description: getPublishDescription(this.modal.app, file),
             image: getPublishImage(this.modal.app, file),
+            aliases: getPublishAliases(this.modal.app, file),
           } : undefined;
           const hash = await client.publishFile(diff.path, meta);
           // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
