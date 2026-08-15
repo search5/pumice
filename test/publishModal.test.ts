@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { classifyExistingFile, isNewFileEligible, scanSingleFile } from "../src/publishEligibility";
+import { classifyExistingFile, isNewFileEligible, parsePublishFlag, scanSingleFile } from "../src/publishEligibility";
+
+// parsePublishFlag -- matches real Obsidian Publish's own frontmatter.publish parsing exactly
+// (confirmed via obsidian.asar analysis, see 17_옵시디언_퍼블리시_프론트매터_속성.md): a string
+// value is lowercased before matching true/false/yes/no, and null/undefined (field not present
+// at all) is distinct from every other value (the caller's cue to fall back to folder
+// include/exclude settings) -- everything else falls back to plain JS truthiness, same as real
+// Obsidian's `return !!n`.
+describe("parsePublishFlag", () => {
+  it("recognizes boolean true/false directly", () => {
+    expect(parsePublishFlag(true)).toBe(true);
+    expect(parsePublishFlag(false)).toBe(false);
+  });
+
+  it("is case-insensitive for the true/false/yes/no strings", () => {
+    expect(parsePublishFlag("true")).toBe(true);
+    expect(parsePublishFlag("True")).toBe(true);
+    expect(parsePublishFlag("TRUE")).toBe(true);
+    expect(parsePublishFlag("yes")).toBe(true);
+    expect(parsePublishFlag("Yes")).toBe(true);
+    expect(parsePublishFlag("false")).toBe(false);
+    expect(parsePublishFlag("False")).toBe(false);
+    expect(parsePublishFlag("FALSE")).toBe(false);
+    expect(parsePublishFlag("no")).toBe(false);
+    expect(parsePublishFlag("No")).toBe(false);
+  });
+
+  it("returns null when the field is missing entirely -- distinct from any other value", () => {
+    expect(parsePublishFlag(null)).toBeNull();
+    expect(parsePublishFlag(undefined)).toBeNull();
+  });
+
+  it("falls back to plain truthiness for anything that isn't true/false/yes/no, matching real Obsidian's own fallback", () => {
+    expect(parsePublishFlag("banana")).toBe(true);
+    expect(parsePublishFlag("")).toBe(false);
+    expect(parsePublishFlag(1)).toBe(true);
+    expect(parsePublishFlag(0)).toBe(false);
+  });
+});
 
 // classifyExistingFile -- decides what happens to a file that's already published on the
 // server, given its current frontmatter and whether its local content differs from the

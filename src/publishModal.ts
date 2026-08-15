@@ -5,7 +5,7 @@ import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { classifyExistingFile, DiffType, isNewFileEligible, scanSingleFile } from "./publishEligibility";
+import { classifyExistingFile, DiffType, isNewFileEligible, parsePublishFlag, scanSingleFile } from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -20,12 +20,7 @@ interface DiffItem {
 
 function getPublishFlag(app: App, file: TFile): boolean | null {
   const cache = app.metadataCache.getFileCache(file);
-  // frontmatter values are arbitrary YAML, so FrontMatterCache types them `any` -- annotating
-  // `unknown` here instead keeps that from flowing further than this one comparison.
-  const publish: unknown = cache?.frontmatter?.publish;
-  if (publish === true  || publish === "true"  || publish === "yes") return true;
-  if (publish === false || publish === "false" || publish === "no")  return false;
-  return null;
+  return parsePublishFlag(cache?.frontmatter?.publish);
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {

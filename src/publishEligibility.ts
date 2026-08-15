@@ -19,6 +19,26 @@ export interface ExistingFileClassification {
 }
 
 /**
+ * Parses a raw `publish` frontmatter value the same way real Obsidian Publish does (confirmed
+ * via obsidian.asar analysis -- see 17_옵시디언_퍼블리시_프론트매터_속성.md): a string is
+ * lowercased and matched against true/false/yes/no; anything else (including a non-matching
+ * string, or a non-string/non-boolean value like a number) falls back to plain JS truthiness,
+ * same as real Obsidian's `return !!n`. null/undefined (the field isn't set at all) is the one
+ * case treated specially -- it returns null rather than false, since callers need to tell
+ * "explicitly turned off" apart from "not mentioned at all" (the latter falls back to folder
+ * include/exclude settings, see isNewFileEligible above).
+ */
+export function parsePublishFlag(value: unknown): boolean | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower === "false" || lower === "no") return false;
+    if (lower === "true" || lower === "yes") return true;
+  }
+  return Boolean(value);
+}
+
+/**
  * Decides what to do with a file that's already published on the server, given its current
  * `publish` frontmatter and whether its local content differs from the server's copy.
  * Eligibility is driven purely by an explicit `publish: true` -- there's no folder-based
