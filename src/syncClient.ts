@@ -58,6 +58,23 @@ export interface PublishFileMeta {
   aliases?: string[] | null;
 }
 
+// First batch of real Obsidian Publish's "Change site options" dialog (~20 settings total, see
+// 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest (graph/search/outline/
+// backlinks/sliding window/navigation sidebar/custom domain/collaboration) need real new site
+// features, not just a stored value, so they're deferred (see 25_사이트_옵션_1차_구현.md).
+// googleAnalytics is included here because it's settable via this same API, but the server
+// deliberately never renders it (same custom-domain precondition as publish.js).
+export interface PublishSiteOptions {
+  siteName: string;
+  indexFile: string;
+  logo: string;
+  noindex: boolean;
+  hideTitle: boolean;
+  readableLineLength: boolean;
+  strictLineBreaks: boolean;
+  googleAnalytics: string;
+}
+
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
 // so the Vault API has no way to reach them at all). This follows Obsidian's official plugin
@@ -1457,6 +1474,19 @@ export class SyncClient {
   // Password: DEL
   public async deletePassword(name: string): Promise<void> {
     await this.postToBackend("api/password", { del: name });
+  }
+
+  // Site options: first batch of real Obsidian's "Change site options" dialog (see
+  // 25_사이트_옵션_1차_구현.md). GET (empty body) and SET (partial patch) share one endpoint,
+  // matching the server's own get-current-or-merge-and-return-current convention.
+  public async getSiteOptions(): Promise<PublishSiteOptions> {
+    const res = await this.postToBackend<{ options: PublishSiteOptions }>("api/options", {});
+    return res.options;
+  }
+
+  public async setSiteOptions(options: Partial<PublishSiteOptions>): Promise<PublishSiteOptions> {
+    const res = await this.postToBackend<{ options: PublishSiteOptions }>("api/options", { options });
+    return res.options;
   }
 
   // Slug: GET slugs map

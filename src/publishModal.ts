@@ -1,6 +1,6 @@
-import { AbstractInputSuggest, App, Modal, Notice, Setting, TFile, TFolder, normalizePath, setIcon } from "obsidian";
+import { AbstractInputSuggest, App, Modal, Notice, Setting, TextComponent, TFile, TFolder, ToggleComponent, normalizePath, setIcon } from "obsidian";
 import SyncPlugin from "./main";
-import { SyncClient } from "./syncClient";
+import { SyncClient, type PublishSiteOptions } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
@@ -503,15 +503,11 @@ class ReviewChangesSection extends ModalSection {
 
       // Icon group (excluding "switch site")
       infoEl.createDiv("publish-changes-switch-site", iconsEl => {
-        // "Site options" (Change site options) button — temporarily hidden since it isn't built yet.
-        // Uncomment once it's finished.
-        /*
         iconsEl.createSpan("clickable-icon", el => {
           setIcon(el, "lucide-settings");
           el.setAttribute("aria-label", t("plugins.publish.tooltip-open-site-options", "Site options"));
           el.addEventListener("click", () => modal.openSection(modal.siteOptionsSection));
         });
-        */
         iconsEl.createSpan("clickable-icon", el => {
           setIcon(el, "lucide-filter");
           el.setAttribute("aria-label", t("plugins.publish.tooltip-manage-publish-filters", "Publish filters"));
@@ -637,6 +633,24 @@ class SiteOptionsSection extends ModalSection {
   private passwordListEl!: HTMLElement;
   private shareListEl!: HTMLElement;
 
+  // First batch of real Obsidian's "Change site options" dialog (~20 settings total, see
+  // 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest need real new site features
+  // (graph/search/outline/backlinks/sliding window/navigation sidebar/custom domain/
+  // collaboration), not just a stored value, so they're deferred (see 25_사이트_옵션_1차_구현.md).
+  private siteNameText!: TextComponent;
+  private indexFileText!: TextComponent;
+  private logoText!: TextComponent;
+  private noindexToggle!: ToggleComponent;
+  private hideTitleToggle!: ToggleComponent;
+  private readableLineLengthToggle!: ToggleComponent;
+  private strictLineBreaksToggle!: ToggleComponent;
+  private googleAnalyticsText!: TextComponent;
+  // Real Obsidian accumulates changed fields locally and only sends them on "Save site
+  // settings" (confirmed via obsidian.asar's Gee.show(), which builds a local `l={}` object
+  // from each field's onChange and posts it as one apiOptions(l) call) -- matched here rather
+  // than auto-saving per field.
+  private pendingOptionChanges: Partial<PublishSiteOptions> = {};
+
   constructor(modal: PublishModal) {
     super(modal);
 
@@ -664,6 +678,71 @@ class SiteOptionsSection extends ModalSection {
       const saveBtn = el.createEl("button", { cls: "mod-cta", text: t("dialogue.button-save", "Save") });
       saveBtn.addEventListener("click", () => void this.saveSlug());
     });
+
+    // General (matches real Obsidian's "General" group in the Change site options dialog)
+    new Setting(this.el).setName(t("plugins.publish.label-site-general", "General")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-site-name", "Site name"))
+      .setDesc(t("plugins.publish.option-site-name-desc", "Shown in your site's header and browser tab title."))
+      .addText(text => {
+        this.siteNameText = text;
+        text.onChange(v => { this.pendingOptionChanges.siteName = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-home-page", "Home page"))
+      .setDesc(t("plugins.publish.option-home-page-desc", "The published note shown when visitors first arrive at your site."))
+      .addText(text => {
+        this.indexFileText = text;
+        text.onChange(v => { this.pendingOptionChanges.indexFile = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-logo", "Logo"))
+      .setDesc(t("plugins.publish.option-logo-desc", "A published image shown next to your site name."))
+      .addText(text => {
+        this.logoText = text;
+        text.onChange(v => { this.pendingOptionChanges.logo = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-noindex", "Hide from search engines"))
+      .setDesc(t("plugins.publish.option-noindex-desc", "Ask search engines not to index your site."))
+      .addToggle(toggle => {
+        this.noindexToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.noindex = v; });
+      });
+
+    // Reading experience
+    new Setting(this.el).setName(t("plugins.publish.label-site-reading-experience", "Reading experience")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-hide-title", "Hide title"))
+      .setDesc(t("plugins.publish.option-hide-title-desc", "Hide the note title shown above its content."))
+      .addToggle(toggle => {
+        this.hideTitleToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.hideTitle = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-readable-line-length", "Readable line length"))
+      .setDesc(t("plugins.publish.option-readable-line-length-desc", "Constrain content to a comfortable reading width."))
+      .addToggle(toggle => {
+        this.readableLineLengthToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.readableLineLength = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-strict-line-breaks", "Strict line breaks"))
+      .setDesc(t("plugins.publish.option-strict-line-breaks-desc", "Turn single line breaks in your notes into line breaks on the published page."))
+      .addToggle(toggle => {
+        this.strictLineBreaksToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.strictLineBreaks = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-google-analytics", "Google Analytics tracking code"))
+      .addText(text => {
+        this.googleAnalyticsText = text;
+        text.onChange(v => { this.pendingOptionChanges.googleAnalytics = v; });
+      });
+    new Setting(this.el).addButton(btn =>
+      btn.setButtonText(t("plugins.publish.button-save-site-settings", "Save site settings")).setCta()
+        .onClick(() => void this.saveSiteOptions())
+    );
 
     // Password management
     new Setting(this.el).setName(t("plugins.publish.label-manage-passwords", "Manage passwords")).setHeading();
@@ -741,8 +820,36 @@ class SiteOptionsSection extends ModalSection {
       const vaultName = this.modal.app.vault.getName();
       this.slugInput.value = slugs[vaultName] ?? vaultName;
     } catch { /* ignore */ }
+    await this.loadSiteOptions();
     await this.loadPasswords();
     // await this.loadShares(); // not called while the sharing-management UI stays hidden
+  }
+
+  private async loadSiteOptions() {
+    try {
+      const client = await this.modal.plugin.getSyncClient();
+      const options = await client.getSiteOptions();
+      this.siteNameText.setValue(options.siteName);
+      this.indexFileText.setValue(options.indexFile);
+      this.logoText.setValue(options.logo);
+      this.noindexToggle.setValue(options.noindex);
+      this.hideTitleToggle.setValue(options.hideTitle);
+      this.readableLineLengthToggle.setValue(options.readableLineLength);
+      this.strictLineBreaksToggle.setValue(options.strictLineBreaks);
+      this.googleAnalyticsText.setValue(options.googleAnalytics);
+      this.pendingOptionChanges = {};
+    } catch { /* ignore */ }
+  }
+
+  private async saveSiteOptions() {
+    try {
+      const client = await this.modal.plugin.getSyncClient();
+      await client.setSiteOptions(this.pendingOptionChanges);
+      this.pendingOptionChanges = {};
+      new Notice(t("plugins.publish.msg-site-settings-saved", "Site settings saved."));
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
   }
 
   private async saveSlug() {

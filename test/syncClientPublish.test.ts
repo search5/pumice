@@ -367,6 +367,46 @@ describe("SyncClient password/slug/site methods (postToBackend/postToFrontend)",
   });
 });
 
+// First batch of the "Change site options" dialog (see 25_사이트_옵션_1차_구현.md).
+describe("SyncClient.getSiteOptions / setSiteOptions", () => {
+  const OPTIONS = {
+    siteName: "My Site", indexFile: "Home.md", logo: "logo.png", noindex: true,
+    hideTitle: false, readableLineLength: true, strictLineBreaks: false, googleAnalytics: "",
+  };
+
+  it("getSiteOptions posts to api/options with {id, token} and an empty body, returning the options", async () => {
+    mockHttp({ status: 200, json: { options: OPTIONS } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const result = await client.getSiteOptions();
+
+    expect(result).toEqual(OPTIONS);
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/api/options");
+    expect(JSON.parse(call.body as string)).toEqual({ id: "myvault", token: "test-token" });
+  });
+
+  it("setSiteOptions posts {id, token, options} with only the changed fields", async () => {
+    mockHttp({ status: 200, json: { options: OPTIONS } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const result = await client.setSiteOptions({ siteName: "My Site", noindex: true });
+
+    expect(result).toEqual(OPTIONS);
+    const call = lastCall();
+    expect(JSON.parse(call.body as string)).toEqual({
+      id: "myvault", token: "test-token", options: { siteName: "My Site", noindex: true },
+    });
+  });
+
+  it("getSiteOptions throws on failure", async () => {
+    mockHttp({ status: 500, text: "boom" });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await expect(client.getSiteOptions()).rejects.toThrow(/api\/options failed: 500/);
+  });
+});
+
 describe("SyncClient.downloadPublishedFile", () => {
   it("posts {id, token, path} to /api/download and returns the bytes", async () => {
     const data = new TextEncoder().encode("published content").buffer;
