@@ -5,6 +5,7 @@ import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
+import { deriveTopLevelNames, mergeOrdering, moveEntry, type SidebarEntry, toggleHidden, toSiteOptionsPatch } from "./navigationOrdering";
 import {
   classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseAliases,
   parseDescription, parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag,
@@ -788,6 +789,14 @@ class SiteOptionsSection extends ModalSection {
         this.showNavigationToggle = toggle;
         toggle.onChange(v => { this.pendingOptionChanges.showNavigation = v; });
       });
+    const customizeSidebarSetting = this.el.createDiv("setting-item");
+    customizeSidebarSetting.createDiv("setting-item-info", el => {
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-customize-navigation", "Customize navigation") });
+    });
+    customizeSidebarSetting.createDiv("setting-item-control", el => {
+      const btn = el.createEl("button", { text: t("plugins.publish.button-customize-sidebar", "Customize sidebar") });
+      btn.addEventListener("click", () => new CustomizeSidebarModal(modal.app, modal.plugin).open());
+    });
     new Setting(this.el)
       .setName(t("plugins.publish.option-show-search", "Enable search"))
       .setDesc(t("plugins.publish.option-show-search-desc", "Show a search box for visitors to find notes on your site."))
@@ -1150,6 +1159,102 @@ class CustomDomainModal extends Modal {
       const client = await this.plugin.getSyncClient();
       await client.setCustomDomain(this.urlInput.value.trim(), this.redirectToggle.getValue());
       new Notice(t("plugins.publish.msg-custom-domain-saved", "Custom domain saved."));
+      this.close();
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+// ─── CustomizeSidebarModal ───────────────────────────────────────────────────
+// Real Obsidian's own "Customize navigation → Customize sidebar" sub-dialog (drag-reorder +
+// hide top-level items, see 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md). Uses up/down
+// move buttons instead of real drag-and-drop -- pointer/touch drag handling has real
+// cross-platform complexity this session can't visually verify without a browser, and buttons
+// give the exact same end result (see 34_실제_아키텍처_전환_Customize_sidebar.md). The ordering/
+// hiding logic itself lives in navigationOrdering.ts (unit tested there), matching
+// pumice-server's own _build_navigation_tree fallback exactly so what's edited here is what the
+// site actually renders.
+class CustomizeSidebarModal extends Modal {
+  private entries: SidebarEntry[] = [];
+  private listEl!: HTMLElement;
+
+  constructor(app: App, private plugin: SyncPlugin) {
+    super(app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText(t("plugins.publish.option-customize-navigation", "Customize navigation"));
+
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t(
+        "plugins.publish.msg-customize-sidebar-help",
+        "Reorder or hide top-level notes and folders shown in your site's navigation sidebar."
+      ),
+    });
+
+    this.listEl = contentEl.createDiv("pumice-customize-sidebar-list");
+
+    try {
+      const client = await this.plugin.getSyncClient();
+      const [files, options] = await Promise.all([client.getPublishedFiles(), client.getSiteOptions()]);
+      const topLevelNames = deriveTopLevelNames(files);
+      this.entries = mergeOrdering(topLevelNames, options.navigationOrdering, options.navigationHiddenItems);
+    } catch { /* ignore */ }
+
+    this.render();
+
+    new Setting(contentEl).addButton(btn =>
+      btn.setButtonText(t("dialogue.button-save", "Save")).setCta().onClick(() => void this.save())
+    );
+  }
+
+  private render() {
+    this.listEl.empty();
+    this.entries.forEach((entry, index) => {
+      const row = this.listEl.createDiv("setting-item");
+      row.createDiv("setting-item-info", el => {
+        el.createDiv({ cls: "setting-item-name", text: entry.name });
+      });
+      row.createDiv("setting-item-control", el => {
+        const hiddenCheckbox = el.createEl("input", { type: "checkbox" });
+        hiddenCheckbox.checked = entry.hidden;
+        hiddenCheckbox.setAttribute("aria-label", t("plugins.publish.label-hide-nav-item", "Hide"));
+        hiddenCheckbox.addEventListener("change", () => {
+          this.entries = toggleHidden(this.entries, index);
+        });
+
+        const upBtn = el.createEl("button", { cls: "clickable-icon" });
+        setIcon(upBtn, "lucide-arrow-up");
+        upBtn.setAttribute("aria-label", t("plugins.publish.label-move-up", "Move up"));
+        upBtn.addEventListener("click", () => {
+          this.entries = moveEntry(this.entries, index, -1);
+          this.render();
+        });
+
+        const downBtn = el.createEl("button", { cls: "clickable-icon" });
+        setIcon(downBtn, "lucide-arrow-down");
+        downBtn.setAttribute("aria-label", t("plugins.publish.label-move-down", "Move down"));
+        downBtn.addEventListener("click", () => {
+          this.entries = moveEntry(this.entries, index, 1);
+          this.render();
+        });
+      });
+    });
+  }
+
+  private async save() {
+    try {
+      const client = await this.plugin.getSyncClient();
+      await client.setSiteOptions(toSiteOptionsPatch(this.entries));
+      new Notice(t("plugins.publish.msg-customize-sidebar-saved", "Sidebar order saved."));
       this.close();
     } catch (e: unknown) {
       new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
