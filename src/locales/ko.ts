@@ -91,6 +91,8 @@ export const ko: Record<string, string> = {
   "plugins.publish.option-password-placeholder": "비밀번호",
   "plugins.publish.option-readable-line-length": "읽기 좋은 줄 길이",
   "plugins.publish.option-readable-line-length-desc": "콘텐츠 너비를 읽기 편한 길이로 제한합니다.",
+  "plugins.publish.option-show-search": "검색 사용",
+  "plugins.publish.option-show-search-desc": "방문자가 사이트에서 노트를 검색할 수 있는 검색창을 표시합니다.",
   "plugins.publish.option-site-id": "사이트 슬러그",
   "plugins.publish.option-site-id-placeholder": "my-site",
   "plugins.publish.option-site-name": "사이트 이름",

@@ -645,6 +645,7 @@ class SiteOptionsSection extends ModalSection {
   private readableLineLengthToggle!: ToggleComponent;
   private strictLineBreaksToggle!: ToggleComponent;
   private googleAnalyticsText!: TextComponent;
+  private showSearchToggle!: ToggleComponent;
   // Real Obsidian accumulates changed fields locally and only sends them on "Save site
   // settings" (confirmed via obsidian.asar's Gee.show(), which builds a local `l={}` object
   // from each field's onChange and posts it as one apiOptions(l) call) -- matched here rather
@@ -721,6 +722,13 @@ class SiteOptionsSection extends ModalSection {
       .addToggle(toggle => {
         this.noindexToggle = toggle;
         toggle.onChange(v => { this.pendingOptionChanges.noindex = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-search", "Enable search"))
+      .setDesc(t("plugins.publish.option-show-search-desc", "Show a search box for visitors to find notes on your site."))
+      .addToggle(toggle => {
+        this.showSearchToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showSearch = v; });
       });
 
     // Reading experience
@@ -846,6 +854,7 @@ class SiteOptionsSection extends ModalSection {
       this.indexFileText.setValue(options.indexFile);
       this.logoText.setValue(options.logo);
       this.noindexToggle.setValue(options.noindex);
+      this.showSearchToggle.setValue(options.showSearch);
       this.hideTitleToggle.setValue(options.hideTitle);
       this.readableLineLengthToggle.setValue(options.readableLineLength);
       this.strictLineBreaksToggle.setValue(options.strictLineBreaks);

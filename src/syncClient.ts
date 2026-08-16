@@ -59,9 +59,12 @@ export interface PublishFileMeta {
 }
 
 // First batch of real Obsidian Publish's "Change site options" dialog (~20 settings total, see
-// 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest (graph/search/outline/
-// backlinks/sliding window/navigation sidebar/custom domain/collaboration) need real new site
-// features, not just a stored value, so they're deferred (see 25_사이트_옵션_1차_구현.md).
+// 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest (graph/outline/backlinks/
+// sliding window/navigation sidebar/custom domain/collaboration) need real new site features,
+// not just a stored value, so they're deferred (see 25_사이트_옵션_1차_구현.md). showSearch was
+// added once search itself landed (28_실제_아키텍처_전환_Phase1_노트본문.md's Phase 3) --
+// same "add the option when its feature exists" pattern as custom domain unblocking
+// googleAnalytics/publish.js (26_커스텀_도메인_지원.md).
 // googleAnalytics is included here because it's settable via this same API, but the server
 // deliberately never renders it (same custom-domain precondition as publish.js).
 export interface PublishSiteOptions {
@@ -73,6 +76,7 @@ export interface PublishSiteOptions {
   readableLineLength: boolean;
   strictLineBreaks: boolean;
   googleAnalytics: string;
+  showSearch: boolean;
 }
 
 // Real Obsidian's apiCustomUrl(url, redirect) response shape (see 26_커스텀_도메인_지원.md).

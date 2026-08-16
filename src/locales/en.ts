@@ -93,6 +93,8 @@ export const en: Record<string, string> = {
   "plugins.publish.option-password-placeholder": "Password",
   "plugins.publish.option-readable-line-length": "Readable line length",
   "plugins.publish.option-readable-line-length-desc": "Constrain content to a comfortable reading width.",
+  "plugins.publish.option-show-search": "Enable search",
+  "plugins.publish.option-show-search-desc": "Show a search box for visitors to find notes on your site.",
   "plugins.publish.option-site-id": "Site slug",
   "plugins.publish.option-site-id-placeholder": "my-site",
   "plugins.publish.option-site-name": "Site name",
