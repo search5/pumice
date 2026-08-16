@@ -1,11 +1,12 @@
 import { AbstractInputSuggest, App, DropdownComponent, Modal, Notice, Setting, TextComponent, TFile, TFolder, ToggleComponent, normalizePath, setIcon } from "obsidian";
 import SyncPlugin from "./main";
-import { SyncClient, type PublishSiteOptions } from "./syncClient";
+import { SyncClient, type PublishSiteOptions, type RemoteSite } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import { deriveTopLevelNames, mergeOrdering, moveEntry, type SidebarEntry, toggleHidden, toSiteOptionsPatch } from "./navigationOrdering";
+import { buildRemoteSiteUrl, type SharedSite } from "./siteCollaboration";
 import {
   classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseAliases,
   parseDescription, parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag,
@@ -88,9 +89,10 @@ async function scanForChanges(
   client: SyncClient,
   includeFolders: string[],
   excludeFolders: string[],
-  hashCache: ContentHashCache
+  hashCache: ContentHashCache,
+  remoteSite?: RemoteSite
 ): Promise<DiffItem[]> {
-  const serverFiles = await client.listFiles();
+  const serverFiles = await client.listFiles(remoteSite);
   const serverMap = new Map<string, string>();
   for (const f of serverFiles) serverMap.set(f.path, f.hash);
 
@@ -499,22 +501,28 @@ class ReviewChangesSection extends ModalSection {
       });
       const siteLink = infoEl.createEl("a", "publish-changes-current-site-name");
       siteLink.href = modal.siteUrl;
-      siteLink.setText(modal.app.vault.getName());
+      siteLink.setText(modal.remoteSite?.siteName ?? modal.app.vault.getName());
       siteLink.setAttribute("target", "_blank");
 
-      // Icon group (excluding "switch site")
-      infoEl.createDiv("publish-changes-switch-site", iconsEl => {
-        iconsEl.createSpan("clickable-icon", el => {
-          setIcon(el, "lucide-settings");
-          el.setAttribute("aria-label", t("plugins.publish.tooltip-open-site-options", "Site options"));
-          el.addEventListener("click", () => modal.openSection(modal.siteOptionsSection));
+      // Icon group (excluding "switch site") -- Site options/Publish filters both target
+      // owner-only endpoints (real Obsidian's own Site collaboration permission table has no
+      // "Configure site options" for collaborators, see 36_실제_아키텍처_전환_
+      // Site_collaboration.md), so hidden entirely in collaborator mode rather than shown and
+      // erroring.
+      if (!modal.remoteSite) {
+        infoEl.createDiv("publish-changes-switch-site", iconsEl => {
+          iconsEl.createSpan("clickable-icon", el => {
+            setIcon(el, "lucide-settings");
+            el.setAttribute("aria-label", t("plugins.publish.tooltip-open-site-options", "Site options"));
+            el.addEventListener("click", () => modal.openSection(modal.siteOptionsSection));
+          });
+          iconsEl.createSpan("clickable-icon", el => {
+            setIcon(el, "lucide-filter");
+            el.setAttribute("aria-label", t("plugins.publish.tooltip-manage-publish-filters", "Publish filters"));
+            el.addEventListener("click", () => modal.openSection(modal.siteFiltersSection));
+          });
         });
-        iconsEl.createSpan("clickable-icon", el => {
-          setIcon(el, "lucide-filter");
-          el.setAttribute("aria-label", t("plugins.publish.tooltip-manage-publish-filters", "Publish filters"));
-          el.addEventListener("click", () => modal.openSection(modal.siteFiltersSection));
-        });
-      });
+      }
 
       // Search filter input
       const searchContainer = infoEl.createDiv("search-input-container");
@@ -855,36 +863,40 @@ class SiteOptionsSection extends ModalSection {
       });
     });
 
-    // Sharing management — not a finished feature on our side yet, so it's kept hidden from the UI
-    // for now (commented out, but the code is kept).
-    /*
-    new Setting(this.el).setName(t("plugins.publish.label-manage-sharing", "Manage sharing", { name: modal.app.vault.getName() })).setHeading();
+    // Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- lets the owner
+    // invite other accounts to publish/unpublish on this site (not full vault-sync access, see
+    // that doc's confirmed real Obsidian permission table). Was previously commented out here as
+    // an unfinished feature; loadShares()/getShares()/removeShare() already worked correctly,
+    // only this invite block had real bugs (fixed below: the heading now actually uses its
+    // {{vaultName}} interpolation, the label/button no longer share one locale key, and the
+    // error handler matches this class's own errorMessage()/msg-generic-error convention instead
+    // of a raw untranslated string).
+    new Setting(this.el).setName(t("plugins.publish.label-manage-sharing", "Manage sharing for \"{{vaultName}}\"", { vaultName: modal.app.vault.getName() })).setHeading();
     this.shareListEl = this.el.createDiv("setting-item-list");
 
     const inviteSetting = this.el.createDiv("setting-item");
     inviteSetting.createDiv("setting-item-info", el => {
-      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-invite-user", "Share invite") });
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.label-share-invite", "Share invite") });
     });
     inviteSetting.createDiv("setting-item-control", el => {
       const emailInput = el.createEl("input", {
         type: "email",
-        placeholder: t("plugins.publish.placeholder-invite-user", "Email"),
-      }) as HTMLInputElement;
+        placeholder: t("plugins.publish.placeholder-share-invite-email", "Email"),
+      });
       emailInput.addClass("setting-input");
-      const inviteBtn = el.createEl("button", { text: t("plugins.publish.option-invite-user", "Invite") });
-      inviteBtn.addEventListener("click", async () => {
+      const inviteBtn = el.createEl("button", { text: t("plugins.publish.button-share-invite", "Invite") });
+      inviteBtn.addEventListener("click", () => { void (async () => {
         if (!emailInput.value) return;
         try {
           const client = await modal.plugin.getSyncClient();
           await client.inviteShare(emailInput.value);
           emailInput.value = "";
           await this.loadShares();
-        } catch (e: any) {
-          new Notice(`오류: ${e.message}`);
+        } catch (e: unknown) {
+          new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
         }
-      });
+      })(); });
     });
-    */
   }
 
   async load() {
@@ -896,7 +908,7 @@ class SiteOptionsSection extends ModalSection {
     } catch { /* ignore */ }
     await this.loadSiteOptions();
     await this.loadPasswords();
-    // await this.loadShares(); // not called while the sharing-management UI stays hidden
+    await this.loadShares();
   }
 
   private async loadSiteOptions() {
@@ -1377,7 +1389,7 @@ class SiteFiltersSection extends ModalSection {
 class UploadProgressSection extends ModalSection {
   constructor(modal: PublishModal) { super(modal); }
 
-  async startUpload(diffs: DiffItem[], client: SyncClient, focusFile?: TFile) {
+  async startUpload(diffs: DiffItem[], client: SyncClient, focusFile?: TFile, remoteSite?: RemoteSite) {
     this.el.empty();
 
     const changesContainer = this.el.createDiv("list-item-parent upload-progress-container");
@@ -1429,7 +1441,7 @@ class UploadProgressSection extends ModalSection {
       info.flairEl.setText(t("plugins.publish.label-status-uploading", "Uploading..."));
       try {
         if (diff.type === "deleted" || diff.type === "to-delete") {
-          await client.unpublishFile(diff.path);
+          await client.unpublishFile(diff.path, remoteSite);
           info.flairEl.setText(t("plugins.publish.label-status-deleted", "Deleted"));
         } else {
           const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
@@ -1442,7 +1454,7 @@ class UploadProgressSection extends ModalSection {
             image: getPublishImage(this.modal.app, file),
             aliases: getPublishAliases(this.modal.app, file),
           } : undefined;
-          const hash = await client.publishFile(diff.path, meta);
+          const hash = await client.publishFile(diff.path, meta, remoteSite);
           // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
           // value so the next Publish scan doesn't re-read and re-hash this same content.
           if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
@@ -1488,24 +1500,27 @@ export class PublishModal extends Modal {
   // server for the real username tied to the token and updates this if it differs. If the two
   // differ, the upload still succeeds (saved under the server-recognized name's directory) but the
   // "view site" link would point at the wrong (empty) directory named after the local setting.
+  // Not applicable when remoteSite is set (a Site collaboration target, see
+  // 36_실제_아키텍처_전환_Site_collaboration.md) -- there, owner+vaultId are already known exactly,
+  // nothing to guess or refresh.
   siteUrl: string;
 
-  constructor(readonly app: App, readonly plugin: SyncPlugin, private focusFile?: TFile) {
+  constructor(readonly app: App, readonly plugin: SyncPlugin, private focusFile?: TFile, readonly remoteSite?: SharedSite) {
     super(app);
     // grpc-publish-modal: reusing the same classes as core Publish (tree-item, setting-item, etc.)
     // meant core's stylesheet applied to our modal too, making it "look just like core" — so all the
     // CSS that gives this its own look is scoped under this class, to avoid leaking into other core
     // UI like the file explorer.
     this.modalEl.addClass("mod-publish", "mod-lg", "mod-scrollable-content", "grpc-publish-modal");
-    this.siteUrl = this.buildSiteUrl(plugin.settings.userName || "default_user");
+    this.siteUrl = this.remoteSite
+      ? this.computeSiteUrl(this.remoteSite.owner, this.remoteSite.vaultId)
+      : this.computeSiteUrl(plugin.settings.userName || "default_user", this.app.vault.getName());
   }
 
-  private buildSiteUrl(username: string): string {
+  private computeSiteUrl(owner: string, vaultId: string): string {
     const { settings } = this.plugin;
     const protocol = settings.useTls ? "https" : "http";
-    const host = settings.serverHost === "localhost" ? "127.0.0.1" : settings.serverHost;
-    const port = settings.serverPort;
-    return `${protocol}://${host}:${port}/publish/${encodeURIComponent(username)}/${this.app.vault.getName()}/`;
+    return buildRemoteSiteUrl(protocol, settings.serverHost, settings.serverPort, { owner, vaultId });
   }
 
   async onOpen() {
@@ -1513,12 +1528,10 @@ export class PublishModal extends Modal {
     contentEl.empty();
     this.titleEl.setText(t("plugins.publish.action-publish-changes", "Publish changes"));
 
-    // Vault sharing (see 14_vault_sharing_설계.md): a collaborator's Publish actions would
-    // otherwise silently operate on their OWN unrelated account's publish directory instead of
-    // the vault owner's -- getAuthenticatedUsername()/every /api/* call below is scoped to
-    // whichever account this device's token belongs to, with no vaultOwner concept at all.
-    // Real Obsidian keeps Publish collaboration (site collaboration) entirely separate from
-    // vault sync sharing too, so this isn't a scope cut, it's matching that same separation.
+    // Vault sharing (see 14_vault_sharing_설계.md) is still separate from -- and takes priority
+    // over -- Site collaboration (remoteSite, 36_실제_아키텍처_전환_Site_collaboration.md): a
+    // shared/mirrored vault via full sync doesn't also support collaborator-publishing to a
+    // third site in this pass, so this guard fires regardless of remoteSite.
     if (this.plugin.settings.sharedVaultOwner) {
       contentEl.createEl("p", {
         cls: "setting-item-description",
@@ -1542,8 +1555,10 @@ export class PublishModal extends Modal {
     let client: SyncClient | null = null;
     try {
       client = await this.plugin.getSyncClient();
-      const realUsername = await client.getAuthenticatedUsername();
-      if (realUsername) this.siteUrl = this.buildSiteUrl(realUsername);
+      if (!this.remoteSite) {
+        const realUsername = await client.getAuthenticatedUsername();
+        if (realUsername) this.siteUrl = this.computeSiteUrl(realUsername, this.app.vault.getName());
+      }
     } catch {
       // If looking up the server's username fails (offline, etc.), just keep the local
       // settings-based guess built in the constructor.
@@ -1572,7 +1587,7 @@ export class PublishModal extends Modal {
         const diffs = await scanForChanges(
           this.app, client ?? (client = await this.plugin.getSyncClient()),
           includeFolders, excludeFolders,
-          this.plugin.contentHashCache
+          this.plugin.contentHashCache, this.remoteSite
         );
         this.reviewChangesSection.setDiffs(diffs, this.focusFile);
       }
@@ -1608,7 +1623,7 @@ export class PublishModal extends Modal {
     }
     const client = await this.plugin.getSyncClient();
     this.openSection(this.uploadProgressSection);
-    await this.uploadProgressSection.startUpload(diffs, client, this.focusFile);
+    await this.uploadProgressSection.startUpload(diffs, client, this.focusFile, this.remoteSite);
   }
 
   onClose() { this.contentEl.empty(); }

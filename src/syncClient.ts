@@ -96,6 +96,14 @@ export interface CustomDomainConfig {
   redirect: boolean;
 }
 
+// Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- identifies a Publish
+// site that isn't this account's own vault, for the publish-list/upload/remove/download methods
+// below to act on as an accepted collaborator instead of the caller's own vault.
+export interface RemoteSite {
+  owner: string;
+  vaultId: string;
+}
+
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
 // outside the vault index (config files like .obsidian/bookmarks.json — not picked up as a TFile,
 // so the Vault API has no way to reach them at all). This follows Obsidian's official plugin
@@ -1354,8 +1362,8 @@ export class SyncClient {
 
   /** Returns the hash it computed for the upload, so callers can seed a local hash cache with it
    *  for free — it's already unavoidable work, computed regardless of any caching layer. */
-  public async publishFile(filePath: string, meta?: PublishFileMeta): Promise<string> {
-    const siteId = this.vault.getName();
+  public async publishFile(filePath: string, meta?: PublishFileMeta, remoteSite?: RemoteSite): Promise<string> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const data = await readBinaryByPath(this.vault, filePath);
     // Same per-file upload size limit as core Publish (reverse-engineered from obsidian.asar:
     // 52428800 = rejected with a "TOOLARGE" error above 50MB).
@@ -1372,6 +1380,7 @@ export class SyncClient {
         "obs-id": siteId,
         "obs-path": encodeURIComponent(filePath),
         "obs-hash": hash,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
         ...(meta?.permalink ? { "obs-permalink": encodeURIComponent(meta.permalink) } : {}),
         ...(meta?.description ? { "obs-description": encodeURIComponent(meta.description) } : {}),
         ...(meta?.image ? { "obs-image": encodeURIComponent(meta.image) } : {}),
@@ -1387,13 +1396,16 @@ export class SyncClient {
     return hash;
   }
 
-  public async unpublishFile(filePath: string): Promise<void> {
-    const siteId = this.vault.getName();
+  public async unpublishFile(filePath: string, remoteSite?: RemoteSite): Promise<void> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const url = `${this.getPublishHost()}/api/remove`;
     const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath, id: siteId, token: this.token }),
+      body: JSON.stringify({
+        path: filePath, id: siteId, token: this.token,
+        ...(remoteSite ? { owner: remoteSite.owner } : {}),
+      }),
     });
     if (!response.ok) {
       const errText = await response.text();
@@ -1401,8 +1413,8 @@ export class SyncClient {
     }
   }
 
-  public async getPublishedFiles(): Promise<string[]> {
-    const vaultId = this.vault.getName();
+  public async getPublishedFiles(remoteSite?: RemoteSite): Promise<string[]> {
+    const vaultId = remoteSite?.vaultId ?? this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
     const response = await this.httpFetch(url, {
@@ -1410,6 +1422,7 @@ export class SyncClient {
       headers: {
         "Authorization": `Bearer ${this.token}`,
         "obs-id": vaultId,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
       },
     });
     if (!response.ok) return [];
@@ -1418,8 +1431,8 @@ export class SyncClient {
   }
 
   /** Returns the full /api/list response (path + hash included). Used by PublishModal. */
-  public async listFiles(): Promise<Array<{ path: string; hash: string }>> {
-    const vaultId = this.vault.getName();
+  public async listFiles(remoteSite?: RemoteSite): Promise<Array<{ path: string; hash: string }>> {
+    const vaultId = remoteSite?.vaultId ?? this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
     const response = await this.httpFetch(url, {
@@ -1427,6 +1440,7 @@ export class SyncClient {
       headers: {
         "Authorization": `Bearer ${this.token}`,
         "obs-id": vaultId,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
       },
     });
     if (!response.ok) return [];
@@ -1466,13 +1480,16 @@ export class SyncClient {
   }
 
   // Download: POST /api/download with {id, token, path} → binary
-  public async downloadPublishedFile(filePath: string): Promise<ArrayBuffer> {
-    const siteId = this.vault.getName();
+  public async downloadPublishedFile(filePath: string, remoteSite?: RemoteSite): Promise<ArrayBuffer> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const url = `${this.getPublishHost()}/api/download`;
     const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: siteId, token: this.token, path: filePath }),
+      body: JSON.stringify({
+        id: siteId, token: this.token, path: filePath,
+        ...(remoteSite ? { owner: remoteSite.owner } : {}),
+      }),
     });
     if (!response.ok) {
       const errText = await response.text();
@@ -1603,6 +1620,21 @@ export class SyncClient {
       const errText = await response.text();
       throw new Error(`share/accept failed: ${response.status}\n${errText}`);
     }
+  }
+
+  // Share: MINE -- Publish sites this account has been added as an accepted collaborator on
+  // (across every owner, not just this vault's own). GET+Bearer+silent-[]-on-failure, same
+  // convention as listSharedWithMe() below (a list endpoint), not the POST convention the other
+  // Share: * methods above use.
+  public async getMyShares(): Promise<Array<RemoteSite & { siteName: string }>> {
+    const url = `${this.getPublishHost()}/publish/share/mine`;
+    const response = await this.httpFetch(url, {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${this.token}` },
+    });
+    if (!response.ok) return [];
+    const res = (await response.json()) as { sites?: { owner: string; vault_id: string; site_name: string }[] };
+    return (res.sites || []).map((s) => ({ owner: s.owner, vaultId: s.vault_id, siteName: s.site_name }));
   }
 
   // ─── Vault sync sharing (see 14_vault_sharing_설계.md) ────────────────────────────────────

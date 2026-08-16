@@ -7,6 +7,7 @@ import { WsSyncTransport, WsTransportError, HEARTBEAT_CHECK_INTERVAL_MS, type Pu
 import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
 import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
+import { SharedSitePickerModal } from "./sharedSitePickerModal";
 import { isPublishSupportedFile } from "./publishEligibility";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
@@ -231,6 +232,14 @@ export default class SyncPlugin extends Plugin {
       id: "publish-changes",
       name: t("plugins.publish.action-publish-changes", "Publish changes"),
       callback: () => new PublishModal(this.app, this).open(),
+    });
+
+    // Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- command palette
+    // only for now (no ribbon icon/settings-tab shortcut), a deliberate minimal-footprint choice.
+    this.addCommand({
+      id: "publish-shared-site",
+      name: t("plugins.publish.action-publish-shared-site", "Publish a shared site…"),
+      callback: () => new SharedSitePickerModal(this.app, this).open(),
     });
 
     this.addCommand({

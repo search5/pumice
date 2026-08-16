@@ -245,6 +245,22 @@ describe("SyncClient.publishFile", () => {
     await client.publishFile("note.md", { aliases: [] });
     expect(lastCall().headers?.["obs-aliases"]).toBeUndefined();
   });
+
+  // Site collaboration (36_실제_아키텍처_전환_Site_collaboration.md) -- remoteSite is additive
+  // and optional, so every test above (which omits it) already covers the unchanged default path.
+  it("uses the remote site's vaultId as obs-id and adds obs-owner when remoteSite is given", async () => {
+    mockHttp({ status: 200 });
+    const vault = fakeVault();
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    vault.adapter.readBinary.mockResolvedValue(new TextEncoder().encode("hello").buffer);
+    const client = makeClient(fakeTransport(), vault, fakeFileManager());
+
+    await client.publishFile("note.md", undefined, { owner: "alice", vaultId: "alice-vault" });
+
+    const call = lastCall();
+    expect(call.headers?.["obs-id"]).toBe("alice-vault");
+    expect(call.headers?.["obs-owner"]).toBe("alice");
+  });
 });
 
 describe("SyncClient.unpublishFile", () => {
@@ -264,6 +280,18 @@ describe("SyncClient.unpublishFile", () => {
     const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
 
     await expect(client.unpublishFile("note.md")).rejects.toThrow(/not found/);
+  });
+
+  it("uses the remote site's vaultId as id and adds owner to the body when remoteSite is given", async () => {
+    mockHttp({ status: 200 });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.unpublishFile("note.md", { owner: "alice", vaultId: "alice-vault" });
+
+    const call = lastCall();
+    expect(JSON.parse(call.body as string)).toEqual({
+      path: "note.md", id: "alice-vault", token: "test-token", owner: "alice",
+    });
   });
 });
 
@@ -287,6 +315,28 @@ describe("SyncClient.getPublishedFiles / listFiles", () => {
     const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
 
     expect(await client.listFiles()).toEqual([{ path: "a.md", hash: "h1" }]);
+  });
+
+  it("getPublishedFiles uses the remote site's vaultId and adds obs-owner when remoteSite is given", async () => {
+    mockHttp({ status: 200, json: { files: [] } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.getPublishedFiles({ owner: "alice", vaultId: "alice-vault" });
+
+    const call = lastCall();
+    expect(call.headers?.["obs-id"]).toBe("alice-vault");
+    expect(call.headers?.["obs-owner"]).toBe("alice");
+  });
+
+  it("listFiles uses the remote site's vaultId and adds obs-owner when remoteSite is given", async () => {
+    mockHttp({ status: 200, json: { files: [] } });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.listFiles({ owner: "alice", vaultId: "alice-vault" });
+
+    const call = lastCall();
+    expect(call.headers?.["obs-id"]).toBe("alice-vault");
+    expect(call.headers?.["obs-owner"]).toBe("alice");
   });
 });
 
@@ -465,6 +515,41 @@ describe("SyncClient.downloadPublishedFile", () => {
     const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
 
     await expect(client.downloadPublishedFile("note.md")).rejects.toThrow(/gone/);
+  });
+
+  it("uses the remote site's vaultId as id and adds owner to the body when remoteSite is given", async () => {
+    mockHttp({ status: 200, arrayBuffer: new ArrayBuffer(0) });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    await client.downloadPublishedFile("note.md", { owner: "alice", vaultId: "alice-vault" });
+
+    const call = lastCall();
+    expect(JSON.parse(call.body as string)).toEqual({
+      id: "alice-vault", token: "test-token", path: "note.md", owner: "alice",
+    });
+  });
+});
+
+describe("SyncClient.getMyShares", () => {
+  it("returns the sites this account has been added as an accepted collaborator on", async () => {
+    mockHttp({
+      status: 200,
+      json: { sites: [{ owner: "alice", vault_id: "vault1", site_name: "Alice's Notes" }] },
+    });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    const result = await client.getMyShares();
+
+    expect(result).toEqual([{ owner: "alice", vaultId: "vault1", siteName: "Alice's Notes" }]);
+    const call = lastCall();
+    expect(call.url).toBe("http://localhost:8080/publish/share/mine");
+  });
+
+  it("returns an empty array on a non-ok response", async () => {
+    mockHttp({ status: 500 });
+    const client = makeClient(fakeTransport(), fakeVault(), fakeFileManager());
+
+    expect(await client.getMyShares()).toEqual([]);
   });
 });
 
