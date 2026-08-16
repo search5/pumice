@@ -646,6 +646,8 @@ class SiteOptionsSection extends ModalSection {
   private strictLineBreaksToggle!: ToggleComponent;
   private googleAnalyticsText!: TextComponent;
   private showSearchToggle!: ToggleComponent;
+  private slidingWindowModeToggle!: ToggleComponent;
+  private showNavigationToggle!: ToggleComponent;
   // Real Obsidian accumulates changed fields locally and only sends them on "Save site
   // settings" (confirmed via obsidian.asar's Gee.show(), which builds a local `l={}` object
   // from each field's onChange and posts it as one apiOptions(l) call) -- matched here rather
@@ -723,13 +725,6 @@ class SiteOptionsSection extends ModalSection {
         this.noindexToggle = toggle;
         toggle.onChange(v => { this.pendingOptionChanges.noindex = v; });
       });
-    new Setting(this.el)
-      .setName(t("plugins.publish.option-show-search", "Enable search"))
-      .setDesc(t("plugins.publish.option-show-search-desc", "Show a search box for visitors to find notes on your site."))
-      .addToggle(toggle => {
-        this.showSearchToggle = toggle;
-        toggle.onChange(v => { this.pendingOptionChanges.showSearch = v; });
-      });
 
     // Reading experience
     new Setting(this.el).setName(t("plugins.publish.label-site-reading-experience", "Reading experience")).setHeading();
@@ -754,6 +749,33 @@ class SiteOptionsSection extends ModalSection {
         this.strictLineBreaksToggle = toggle;
         toggle.onChange(v => { this.pendingOptionChanges.strictLineBreaks = v; });
       });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-sliding-window-mode", "Sliding window mode"))
+      .setDesc(t("plugins.publish.option-sliding-window-mode-desc", "Open linked notes as new panes sliding in from the right, instead of navigating away."))
+      .addToggle(toggle => {
+        this.slidingWindowModeToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.slidingWindowMode = v; });
+      });
+
+    // Components (matches real Obsidian's "Components" group)
+    new Setting(this.el).setName(t("plugins.publish.label-site-components", "Components")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-navigation", "Show navigation"))
+      .setDesc(t("plugins.publish.option-show-navigation-desc", "Show a sidebar listing your published notes and folders."))
+      .addToggle(toggle => {
+        this.showNavigationToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showNavigation = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-search", "Enable search"))
+      .setDesc(t("plugins.publish.option-show-search-desc", "Show a search box for visitors to find notes on your site."))
+      .addToggle(toggle => {
+        this.showSearchToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showSearch = v; });
+      });
+
+    // Misc (matches real Obsidian's "Misc" group -- Password is above, in its own section)
+    new Setting(this.el).setName(t("plugins.publish.label-site-misc", "Misc")).setHeading();
     new Setting(this.el)
       .setName(t("plugins.publish.option-google-analytics", "Google Analytics tracking code"))
       .addText(text => {
@@ -855,9 +877,11 @@ class SiteOptionsSection extends ModalSection {
       this.logoText.setValue(options.logo);
       this.noindexToggle.setValue(options.noindex);
       this.showSearchToggle.setValue(options.showSearch);
+      this.showNavigationToggle.setValue(options.showNavigation);
       this.hideTitleToggle.setValue(options.hideTitle);
       this.readableLineLengthToggle.setValue(options.readableLineLength);
       this.strictLineBreaksToggle.setValue(options.strictLineBreaks);
+      this.slidingWindowModeToggle.setValue(options.slidingWindowMode);
       this.googleAnalyticsText.setValue(options.googleAnalytics);
       this.pendingOptionChanges = {};
     } catch { /* ignore */ }

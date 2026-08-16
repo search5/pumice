@@ -372,7 +372,8 @@ describe("SyncClient.getSiteOptions / setSiteOptions", () => {
   const OPTIONS = {
     siteName: "My Site", indexFile: "Home.md", logo: "logo.png", noindex: true,
     hideTitle: false, readableLineLength: true, strictLineBreaks: false, googleAnalytics: "",
-    showSearch: true,
+    showSearch: true, showNavigation: false, slidingWindowMode: false,
+    navigationOrdering: [], navigationHiddenItems: [],
   };
 
   it("getSiteOptions posts to api/options with {id, token} and an empty body, returning the options", async () => {
