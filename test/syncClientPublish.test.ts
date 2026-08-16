@@ -374,6 +374,7 @@ describe("SyncClient.getSiteOptions / setSiteOptions", () => {
     hideTitle: false, readableLineLength: true, strictLineBreaks: false, googleAnalytics: "",
     showSearch: true, showNavigation: false, slidingWindowMode: false,
     navigationOrdering: [], navigationHiddenItems: [],
+    defaultTheme: "dark" as const, showThemeToggle: false,
   };
 
   it("getSiteOptions posts to api/options with {id, token} and an empty body, returning the options", async () => {

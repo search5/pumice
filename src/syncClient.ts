@@ -68,6 +68,8 @@ export interface PublishFileMeta {
 // navigationHiddenItems are settable via this same API (used server-side to build the
 // navigation sidebar) but have no dedicated "Customize sidebar" drag-and-drop UI here yet --
 // real Obsidian's own version of that is a separate sub-dialog, out of scope for this phase.
+// defaultTheme/showThemeToggle (see 33_실제_아키텍처_전환_테마_전환.md) -- defaultTheme is
+// "light" | "dark" | "system", not a boolean (real Obsidian's own dropdown has three options).
 // googleAnalytics is included here because it's settable via this same API, but the server
 // deliberately never renders it (same custom-domain precondition as publish.js).
 export interface PublishSiteOptions {
@@ -84,6 +86,8 @@ export interface PublishSiteOptions {
   slidingWindowMode: boolean;
   navigationOrdering: string[];
   navigationHiddenItems: string[];
+  defaultTheme: "light" | "dark" | "system";
+  showThemeToggle: boolean;
 }
 
 // Real Obsidian's apiCustomUrl(url, redirect) response shape (see 26_커스텀_도메인_지원.md).

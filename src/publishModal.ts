@@ -1,4 +1,4 @@
-import { AbstractInputSuggest, App, Modal, Notice, Setting, TextComponent, TFile, TFolder, ToggleComponent, normalizePath, setIcon } from "obsidian";
+import { AbstractInputSuggest, App, DropdownComponent, Modal, Notice, Setting, TextComponent, TFile, TFolder, ToggleComponent, normalizePath, setIcon } from "obsidian";
 import SyncPlugin from "./main";
 import { SyncClient, type PublishSiteOptions } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
@@ -648,6 +648,8 @@ class SiteOptionsSection extends ModalSection {
   private showSearchToggle!: ToggleComponent;
   private slidingWindowModeToggle!: ToggleComponent;
   private showNavigationToggle!: ToggleComponent;
+  private defaultThemeDropdown!: DropdownComponent;
+  private showThemeToggleToggle!: ToggleComponent;
   // Real Obsidian accumulates changed fields locally and only sends them on "Save site
   // settings" (confirmed via obsidian.asar's Gee.show(), which builds a local `l={}` object
   // from each field's onChange and posts it as one apiOptions(l) call) -- matched here rather
@@ -724,6 +726,26 @@ class SiteOptionsSection extends ModalSection {
       .addToggle(toggle => {
         this.noindexToggle = toggle;
         toggle.onChange(v => { this.pendingOptionChanges.noindex = v; });
+      });
+
+    // Appearance (matches real Obsidian's "Appearance" group -- see
+    // 33_실제_아키텍처_전환_테마_전환.md)
+    new Setting(this.el).setName(t("plugins.publish.label-site-appearance", "Appearance")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-default-theme", "Theme"))
+      .addDropdown(dropdown => {
+        this.defaultThemeDropdown = dropdown;
+        dropdown.addOption("light", t("plugins.publish.option-theme-light", "Light"));
+        dropdown.addOption("dark", t("plugins.publish.option-theme-dark", "Dark"));
+        dropdown.addOption("system", t("plugins.publish.option-theme-system", "Same as system"));
+        dropdown.onChange(v => { this.pendingOptionChanges.defaultTheme = v as "light" | "dark" | "system"; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-theme-toggle", "Show theme toggle"))
+      .setDesc(t("plugins.publish.option-show-theme-toggle-desc", "Let visitors switch between light and dark themselves."))
+      .addToggle(toggle => {
+        this.showThemeToggleToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showThemeToggle = v; });
       });
 
     // Reading experience
@@ -876,6 +898,8 @@ class SiteOptionsSection extends ModalSection {
       this.indexFileText.setValue(options.indexFile);
       this.logoText.setValue(options.logo);
       this.noindexToggle.setValue(options.noindex);
+      this.defaultThemeDropdown.setValue(options.defaultTheme);
+      this.showThemeToggleToggle.setValue(options.showThemeToggle);
       this.showSearchToggle.setValue(options.showSearch);
       this.showNavigationToggle.setValue(options.showNavigation);
       this.hideTitleToggle.setValue(options.hideTitle);
