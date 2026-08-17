@@ -104,7 +104,7 @@ export interface WsLike {
 export type WsFactory = (url: string) => WsLike;
 
 type Pending =
-  | { kind: "unary"; resolve: (payload: unknown) => void; reject: (err: Error) => void; sentAt: number }
+  | { kind: "unary"; op: string; resolve: (payload: unknown) => void; reject: (err: Error) => void; sentAt: number }
   | {
       kind: "stream";
       onFrame: (frame: StreamFrame) => void;
@@ -187,6 +187,7 @@ export class WsSyncTransport {
         this.lastMessageTs = Date.now();
         this.pending = {
           kind: "unary",
+          op: "init",
           resolve: (payload) => {
             this.releaseSlot();
             this.authenticated = true;
@@ -217,6 +218,7 @@ export class WsSyncTransport {
       const send = () => {
         this.pending = {
           kind: "unary",
+          op,
           resolve: (p) => {
             this.releaseSlot();
             resolve(p as TRes);
@@ -348,7 +350,23 @@ export class WsSyncTransport {
     }
     const { op, payload } = envelope;
 
-    if (op === "pong") return;
+    if (op === "pong") {
+      // Two different things send "ping" and both get an identical "pong" back, indistinguishable
+      // on the wire: checkHeartbeat()'s own idle keepalive (a raw sendJson, never tracked in
+      // `pending`) and a genuine tracked request("ping", payload) call (testConnection() -- see
+      // wsSyncTransportAdapter.ts's ping()). Only resolve the latter -- if a keepalive pong arrived
+      // while some OTHER request (e.g. delta_req) happens to be pending (idle is based on time
+      // since last *received* message, so this can overlap a slow real request), resolving that
+      // unrelated pending with the pong's payload would silently corrupt it. Checking pending.op
+      // here is what tells the two apart; before this field existed, testConnection() could never
+      // resolve at all except via the 60s checkRequestTimeouts() timeout, even against a healthy
+      // server (found 2026-08-18 verifying the "Test connection" hang against a real server via
+      // CDP -- the WS handshake itself succeeded, but the button stayed stuck regardless).
+      if (this.pending?.kind === "unary" && this.pending.op === "ping") {
+        this.pending.resolve(undefined);
+      }
+      return;
+    }
     if (op === "push") {
       this.onPush?.(payload as PushedFileChangeMeta);
       return;

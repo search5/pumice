@@ -445,6 +445,43 @@ describe("WsSyncTransport heartbeat", () => {
   });
 });
 
+describe("WsSyncTransport tracked ping request", () => {
+  // testConnection() (wsSyncTransportAdapter.ts's ping()) sends a tracked request("ping", {}),
+  // which gets back the exact same "pong" op as checkHeartbeat()'s own untracked idle keepalive
+  // ping -- the two are indistinguishable on the wire. Found 2026-08-18 verifying "Test
+  // connection" against a real server via CDP: the WS handshake succeeded but the button never
+  // came back, because handleMessage() unconditionally ignored every "pong" (a blanket rule that
+  // was only ever meant to protect against the untracked keepalive's reply), so a tracked ping
+  // request could never resolve except via the 60s checkRequestTimeouts() timeout -- even against
+  // a perfectly healthy server.
+  it("resolves a tracked ping request when its pong arrives", async () => {
+    const { transport, ws } = await connectedTransport();
+    const p = transport.request("ping", {});
+
+    ws.simulateJson({ op: "pong", payload: {} });
+
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("does not resolve or corrupt an unrelated pending request when an untracked keepalive pong arrives", async () => {
+    const { transport, ws } = await connectedTransport();
+    const p = transport.request("delta_req", { vaultId: "v1" });
+
+    // Simulates checkHeartbeat()'s own untracked ping/pong firing while a real request happens
+    // to be pending (idle is measured from last *received* message, so this can genuinely
+    // overlap a slow request) -- this pong must not resolve the unrelated delta_req.
+    ws.simulateJson({ op: "pong", payload: {} });
+
+    let settled = false;
+    void p.then(() => (settled = true));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    ws.simulateJson({ op: "delta_ok", payload: { changes: [] } });
+    await expect(p).resolves.toEqual({ changes: [] });
+  });
+});
+
 describe("WsSyncTransport request timeout", () => {
   // Mirrors Obsidian core's own Sync client, which wraps every request() in a 60s timeout and
   // disconnects on expiry (see #11_websocket_동기화_프로토콜_설계.md's re-analysis, 2026-08).
