@@ -9,8 +9,8 @@
 project = "Pumice"
 copyright = "2026, Ji-ho Lee"
 author = "Ji-ho Lee"
-release = "0.0.17"
-version = "0.0.17"
+release = "0.0.35"
+version = "0.0.35"
 
 # -- General configuration ----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

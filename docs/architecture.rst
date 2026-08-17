@@ -12,45 +12,86 @@ Overview
    * - Client
      - TypeScript, Obsidian community plugin (this repository).
    * - Server
-     - Python (``asyncioreactor`` + ``grpc.aio`` + Twisted), see
+     - Python (Pyramid, over a plain WSGI/HTTP server), see
        `pumice-server <https://github.com/search5/pumice-server>`_.
    * - Transport
-     - gRPC-Web (HTTP/2 multiplexing, bidirectional streaming) for the core
-       sync protocol; a hand-rolled ``fetch()`` streaming path for large
-       uploads when TLS is available (see the section below); plain
-       HTTP/REST for publish, version history, and account endpoints.
+     - A single persistent WebSocket per vault carries the entire sync
+       protocol (delta, push/pull, live change notifications, version
+       history) — see the section below. Publish's own served site
+       (``/publish/<user>/<vault>/...``) and the account/admin API are
+       plain HTTP/REST, separate from this connection.
    * - Auth
      - A single device token per login, stored in Obsidian's own secret
        storage (``App#secretStorage``) — no platform-specific keychain code,
        works the same on desktop and mobile.
 
-Transport: gRPC-Web and the streaming fallback
+Transport: one persistent WebSocket per vault
 --------------------------------------------------
 
-Most sync traffic (the file delta comparison, batched uploads, downloads,
-version-history calls) rides over **gRPC-Web**: many files travel
-concurrently over a single HTTP/2 connection instead of one request per
-file, and both client (``grpc-web``) and server (a Twisted ``Resource``
-speaking the protocol natively, not a separate proxy) support it directly.
+Every sync operation — delta comparison, file push/pull, version history
+list/download/restore, size/purge/username lookups — rides the *same* single
+WebSocket connection, opened once per vault and kept open for as long as the
+plugin is configured, instead of one request per action. This intentionally
+matches real Obsidian core Sync's own wire behavior (confirmed by reading
+``obsidian.asar``, not guessed at): reference behavior only, reimplemented
+independently — see ``11_websocket_동기화_프로토콜_설계.md`` for the original
+design writeup.
 
-Uploads have a second path on top of that. Browsers' ``fetch()`` API can
-stream a request body as it's produced (rather than buffering the whole
-thing in memory first) — but only when the connection is HTTPS *and*
-negotiates HTTP/2, and only in browser engines that implement it at all
-(Chromium-based engines have supported it since 2022; WebKit/Safari only
-gained support in version 26.4, which matters specifically for Obsidian's
-iOS app, since it embeds the system WebKit engine via Capacitor rather than
-shipping its own).
+.. note::
 
-Pumice detects this support at runtime (a standard feature-detection
-pattern: constructing a request with a stream body and checking whether the
-``duplex`` option is actually read) and, when both the server is configured
-for TLS *and* the current browser engine supports it, streams large uploads
-directly instead of splitting them into batches. Everywhere else — HTTP
-without TLS, or an engine without streaming-body support — falls back to the
-same batched gRPC-Web path Pumice has always used, entirely transparently;
-nothing about the UI or the resulting synced state differs between the two
-paths.
+   This replaced an earlier gRPC-Web transport entirely. There is no
+   ``.proto`` schema, no ``protoc`` code generation, and no HTTP/REST
+   fallback left anywhere in the sync path — building the plugin no longer
+   requires ``protoc`` (see :doc:`installation`).
+
+**Handshake and framing.** The client opens the connection and sends an
+``init`` message (device token, vault id, device/user name, the plugin's own
+version, and the last change id it already knows about). The server replies
+``init_ok`` (server version, server clock, max upload size) and the
+connection is considered authenticated from then on. Control messages are
+JSON text frames (``{op, payload}``); file bytes travel as raw, unwrapped
+binary frames. There's no request-id multiplexing — like real Obsidian
+Sync's own connection, exactly **one request is outstanding at a time**;
+anything else queues client-side rather than racing multiple in-flight
+requests over the same socket.
+
+**Uploads.** A file push is a ``push_req`` (path, content hash, size)
+followed by either a ``push_ack`` right away — if the server already has
+that exact content elsewhere in the vault (a copy, a rename), it links the
+existing bytes into place and never asks for a re-upload — or a
+``push_res{needData: true}``, at which point the client sends the file as a
+single binary frame.
+
+**Downloads.** The need-download list is split into batches bounded by both
+byte size and file count (a byte-only cap lets a handful of huge files
+starve everything else out of the same batch; see ``batching.ts``), and each
+batch is retried independently up to a fixed attempt count — a single bad or
+oversized batch's failure only re-queues that batch's own paths, not the
+entire download set.
+
+**Live updates.** Because every device keeps its connection open, a change
+one device pushes is broadcast to every other open connection for the same
+vault immediately — no polling, no waiting for a scheduled sync. On top of
+that, a fixed ~30-second safety-net sync runs alongside live push (mirrors
+core Sync's own behavior), so a missed or dropped push notification is never
+more than about half a minute from being caught anyway. A reconnect after a
+dropped connection replays only what changed since the client's last known
+change id, not a full vault rescan.
+
+**Heartbeat and reconnect.** There's no dedicated internal timer; the caller
+polls a heartbeat check periodically — a ping goes out after the connection
+has been idle 10 seconds, and it's considered dead (and reconnected, with
+exponential backoff plus jitter to avoid a reconnect stampede if the server
+restarts) after 120 seconds idle. A single request that's been outstanding
+more than 60 seconds tears down the whole connection rather than waiting
+indefinitely, since a lost response and a wedged socket look identical from
+the client's side.
+
+**What didn't move.** Conflict resolution (including the three-way text
+merge), end-to-end encryption, and writing files into the vault all still
+live entirely in the sync client, transport-agnostic — only *how bytes
+reach the server* changed. Content-hash dedup is now a property of the push
+handshake itself rather than a separate mechanism layered on top.
 
 Settings tab: declarative only
 ------------------------------------
@@ -69,7 +110,11 @@ Vault identity
 A vault's identity on the server is the pair (account username, vault
 folder name) — there's no separate vault ID. The vault's folder name is
 used as-is, which is why every device syncing the same vault needs a folder
-with that exact name (see :doc:`prerequisites`).
+with that exact name (see :doc:`prerequisites`). Vault sharing (see
+:doc:`usage`) extends this rather than replacing it: a shared vault is
+still keyed by (its owner's username, its folder name) — the person it's
+shared with just points their own device at that same pair instead of
+their own.
 
 Project structure
 ---------------------
@@ -78,25 +123,40 @@ Project structure
 
    pumice/
    ├── src/
-   │   ├── main.ts                    # Plugin entry point
-   │   ├── settings.ts                # Settings types and defaults
-   │   ├── settingsTab.ts             # Settings panel UI (declarative, see above)
-   │   ├── syncClient.ts              # gRPC/HTTP client: sync, history, publish
-   │   ├── syncHistoryModal.ts        # Version history UI
-   │   ├── fileRecoveryModal.ts       # Local snapshot recovery UI
-   │   ├── publishModal.ts            # Publish UI
-   │   ├── localSnapshotStore.ts      # Local snapshot management (IndexedDB)
-   │   ├── contentHashCache.ts        # Persists per-file content hashes
-   │   ├── concurrency.ts             # Concurrency-limited async helpers
-   │   ├── diffView.ts                # File diff rendering
-   │   ├── swipeNavigation.ts         # Mobile swipe navigation
-   │   ├── tokenStore.ts              # Auth token storage (App#secretStorage)
-   │   ├── errorMessage.ts            # Error-to-string helper
-   │   ├── i18n.ts, locales/          # Localization strings (Korean/English)
-   │   └── generated/                 # Generated from sync.proto by protoc
-   ├── sync.proto                     # gRPC schema
-   ├── manifest.json                  # Obsidian plugin manifest
-   └── esbuild.config.mjs             # Build configuration
+   │   ├── main.ts                       # Plugin entry point: ribbons, commands, wiring
+   │   ├── settings.ts                   # Settings types and defaults
+   │   ├── settingsTab.ts                # Settings panel UI (declarative, see above)
+   │   ├── settingsTabKeyboard.ts        # Tab-key focus handling inside the settings modal
+   │   ├── syncClient.ts                 # Sync orchestration: delta, conflict merge, E2EE
+   │   ├── syncTransport.ts              # Transport-agnostic interface the sync client talks to
+   │   ├── wsTransport.ts                # The WebSocket transport itself (see above)
+   │   ├── wsSyncTransportAdapter.ts     # Adapts wsTransport to syncTransport's shape
+   │   ├── liveUpdates.ts                # Reconnect/backoff loop, push-notification wiring
+   │   ├── liveStatus.ts                 # "syncing/idle/error" status shown in the UI
+   │   ├── syncHistoryModal.ts           # Version history UI
+   │   ├── syncDiagnosticsModal.ts       # Diagnostics log viewer (see :doc:`usage`)
+   │   ├── syncDiagnosticsLog.ts         # The log buffer that modal reads (capped, per-vault)
+   │   ├── fileRecoveryModal.ts          # Local snapshot recovery UI
+   │   ├── localSnapshotStore.ts         # Local snapshot management (IndexedDB)
+   │   ├── contentHashCache.ts           # Persists per-file content hashes
+   │   ├── lastSyncedHashStore.ts        # Last-synced-hash bookkeeping for delta comparison
+   │   ├── batching.ts                   # Download batching (see above)
+   │   ├── concurrency.ts                # Concurrency-limited async helpers
+   │   ├── diffView.ts                   # File diff rendering
+   │   ├── textFileTypes.ts              # Which extensions get text-aware merge/diff
+   │   ├── publishModal.ts               # Publish UI, including site options
+   │   ├── publishEligibility.ts         # Which notes are in scope to publish
+   │   ├── navigationOrdering.ts         # Published site's sidebar ordering/visibility
+   │   ├── vaultShareModal.ts            # Invite someone to full read/write vault sync
+   │   ├── sharedSitePickerModal.ts      # Pick a site you've been invited to co-publish
+   │   ├── siteCollaboration.ts          # Backing logic for the picker above
+   │   ├── pluginSync.ts, pluginReload.ts # Optional syncing of installed plugins themselves
+   │   ├── swipeNavigation.ts            # Mobile swipe navigation (version history)
+   │   ├── tokenStore.ts                 # Auth token storage (App#secretStorage)
+   │   ├── deviceName.ts, errorMessage.ts # Small shared helpers
+   │   └── i18n.ts, locales/             # Localization strings (Korean/English)
+   ├── manifest.json                     # Obsidian plugin manifest
+   └── esbuild.config.mjs                # Build configuration
 
 See the repository's own `README
 <https://github.com/search5/pumice/blob/main/README.md>`_ for build/release

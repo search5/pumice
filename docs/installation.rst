@@ -32,9 +32,9 @@ Use this method if you want to build from a specific commit, contribute to the
 plugin, or install it on a device without access to Community Plugins (for
 example, to test an unreleased change).
 
-**Requirements:** `Node.js <https://nodejs.org/>`_ (with npm) and ``protoc``
-(the plugin talks to pumice-server over gRPC-Web, generated from
-``sync.proto``).
+**Requirements:** `Node.js <https://nodejs.org/>`_ (with npm) — nothing else.
+The plugin talks to pumice-server entirely over a WebSocket connection (see
+:doc:`architecture`), so there's no ``protoc``/schema-codegen step.
 
 .. code-block:: bash
 

@@ -43,11 +43,12 @@ reverse proxy).
 
 .. note::
 
-   **TLS is optional but recommended for anything beyond localhost**, and it
-   unlocks an additional feature: when the server is reachable over TLS, large
-   uploads stream directly instead of being split into batches (see
-   :doc:`architecture`). Without TLS, sync and publish both still work fully —
-   uploads just fall back to the batched path.
+   **TLS is optional but recommended for anything beyond localhost** — it's
+   the difference between the WebSocket sync connection (see
+   :doc:`architecture`) running as ``wss://`` or plain ``ws://``. Sync and
+   publish both work fully either way; TLS just encrypts the connection
+   itself in transit, which matters once traffic leaves a machine you
+   control.
 
 A quick mental model before you dive in
 ------------------------------------------
