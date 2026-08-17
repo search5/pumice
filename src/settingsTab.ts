@@ -8,6 +8,7 @@ import { VaultShareModal } from "./vaultShareModal";
 import { describeLiveStatus } from "./liveStatus";
 import { t } from "./i18n";
 import { shouldStopTabPropagation } from "./settingsTabKeyboard";
+import { settingChangeRequiresReconnect } from "./settingsTabConnection";
 
 export class SyncSettingTab extends PluginSettingTab {
   plugin: SyncPlugin;
@@ -336,7 +337,14 @@ export class SyncSettingTab extends PluginSettingTab {
     } else if (key === "serverHost" && typeof value === "string") {
       value = value.trim();
     }
-    (this.plugin.settings as unknown as Record<string, unknown>)[key] = value;
+    const settings = this.plugin.settings as unknown as Record<string, unknown>;
+    const previousValue = settings[key];
+    settings[key] = value;
+    if (settingChangeRequiresReconnect(key, previousValue, value)) {
+      // Drop the cached WS connection to the old server so the next getTransport() call (e.g.
+      // "Test connection") reconnects fresh instead of reusing/hanging on the old one.
+      this.plugin.disconnectTransport();
+    }
     await this.plugin.saveSettings();
   }
 
