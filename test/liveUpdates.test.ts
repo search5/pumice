@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { extractSseFrames, nextBackoffMs } from "../src/liveUpdates";
+import { applyJitter, extractSseFrames, nextBackoffMs } from "../src/liveUpdates";
 
 describe("extractSseFrames", () => {
   it("extracts a single complete 'data: changed' frame", () => {
@@ -66,5 +66,27 @@ describe("nextBackoffMs", () => {
 
   it("does not exceed the maximum even after several doublings", () => {
     expect(nextBackoffMs(60000, 60000)).toBe(60000);
+  });
+});
+
+describe("applyJitter", () => {
+  it("returns exactly half at the lowest end of the random range (0)", () => {
+    expect(applyJitter(1000, () => 0)).toBe(500);
+  });
+
+  it("returns the unmodified value at the midpoint of the random range (0.5)", () => {
+    expect(applyJitter(1000, () => 0.5)).toBe(1000);
+  });
+
+  it("approaches one and a half times at the highest end of the random range (just under 1)", () => {
+    expect(applyJitter(1000, () => 0.999)).toBeCloseTo(1499, 0);
+  });
+
+  it("defaults to Math.random when no randomFn is given, staying within the ±50% band", () => {
+    for (let i = 0; i < 50; i++) {
+      const result = applyJitter(1000);
+      expect(result).toBeGreaterThanOrEqual(500);
+      expect(result).toBeLessThan(1500);
+    }
   });
 });

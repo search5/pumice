@@ -2,19 +2,20 @@
 
 [🇺🇸 English](README.md) | 🇰🇷 한국어
 
-자체 호스팅 gRPC 서버([pumice-server](https://github.com/search5/pumice-server) — 필수, 직접
+자체 호스팅 서버([pumice-server](https://github.com/search5/pumice-server) — 필수, 직접
 실행해야 함)와 vault를 동기화하는 옵시디언 커뮤니티 플러그인입니다. 목표는 vault에 파일이
 얼마나 많든 즉시 동기화되는 것입니다.
 
 ## 개요
 
 - **클라이언트**: TypeScript, 옵시디언 커뮤니티 플러그인(이 저장소)
-- **서버**: Python(`asyncioreactor` + `grpc.aio` + `Twisted`), 자세한 내용은
+- **서버**: Python(`asyncioreactor` + `Twisted`), 자세한 내용은
   [pumice-server](https://github.com/search5/pumice-server) 참고
-- **전송 방식**: gRPC-Web(HTTP/2 멀티플렉싱, 양방향 스트리밍) — 파일별로 RPC 하나씩이 아니라
-  많은 파일을 하나의 커넥션 위에서 동시에 전송합니다. 서버가 TLS로 연결 가능할 때는 업로드가
-  대신 단일 `fetch()` 요청으로 직접 스트리밍됩니다(배치 없음, 전체 페이로드를 메모리에
-  버퍼링하지 않음). 그렇지 않으면 위의 gRPC-Web 경로로 폴백합니다.
+- **전송 방식**: 로그인하면 자동으로 열리고 옵시디언이 실행되는 동안 계속 유지되는 단일 상시
+  연결 WebSocket — 옵시디언 자체 내장 Sync 플러그인 방식을 참고해 설계되어, 한 기기에서의
+  수정이 정해진 동기화 주기를 기다리지 않고 다른 기기에 바로 반영됩니다. (이전 버전은
+  gRPC-Web 방식으로 RPC 하나당 HTTP/2 요청 하나였고 실시간 push도 없었는데, 이번 버전에서
+  완전히 대체했습니다.)
 - **인증**: 옵시디언 자체 보안 저장소(`App#secretStorage`, 데스크톱·모바일 공통, 플랫폼별
   코드 불필요)에 저장되는 고정 토큰
 
@@ -28,7 +29,6 @@
 ## 요구 사항
 
 - Node.js(npm 포함)
-- `protoc`(3.21.12으로 확인됨)
 - 옵시디언 1.13.4+ (`manifest.json`의 `minAppVersion`). 설정 탭은 선언형 설정 API
   (`getSettingDefinitions()`)만으로 렌더링되므로(그래서 옵시디언 자체 설정 검색에도
   노출됩니다), 손으로 맞춰줘야 하는 예전 방식(명령형)의 폴백 UI는 더 이상 없습니다.
@@ -71,11 +71,6 @@ git push --follow-tags
 옵시디언 설치 프로그램이 이를 이용해 구버전 앱 사용자에게 호환되는 릴리스를 골라주는데, 이
 플러그인이 Community Plugins 목록에 등록되면 중요해집니다.
 
-`npm install`은 `postinstall` 스크립트를 통해 `protoc-gen-grpc-web` 바이너리를 받아오고,
-`npm run dev`/`build`/`lint`는 각각 (`pre*` 스크립트를 통해) `sync.proto`로부터
-`src/generated/`가 없으면 먼저 생성합니다 — 직접 설치해야 하는 건 `protoc` 뿐입니다. 자세한
-내용은 [gRPC-Web 스텁 재생성하기](#grpc-web-스텁-재생성하기)를 참고하세요.
-
 ### 옵시디언에 로컬로 설치해서 테스트하기
 
 1. `npm run build`를 실행해 `main.js`를 생성합니다.
@@ -83,63 +78,42 @@ git push --follow-tags
    `styles.css`를 복사해 넣습니다.
 3. 옵시디언의 설정 → 커뮤니티 플러그인에서 Pumice를 활성화합니다.
 
-## gRPC-Web 스텁 재생성하기
+## 동기화 동작 방식
 
-`src/generated/`(`sync_pb.js`, `sync_pb.d.ts`, `SyncServiceClientPb.ts`, `SyncServiceClientPb.d.ts`)는
-`sync.proto`로부터 생성됩니다. `.js`/`.ts` 구현 파일은 gitignore 대상이고, `npm run dev`/`build`/`lint`를
-처음 실행할 때(`pre*` 스크립트로 연결된 `scripts/ensure-generated.mjs`를 통해) 자동으로 생성되므로
-새로 클론했을 때 수동 작업이 필요 없습니다. 반면 두 `.d.ts` 파일은 저장소에 커밋되어 있습니다
-(`SyncServiceClientPb.d.ts`는 `npm run proto:gen` 과정에서 `.ts`로부터
-`tsc --declaration --emitDeclarationOnly`로 뽑아냅니다) — 이건 의도적인 결정입니다: `npm install`/생성
-과정 없이 이 저장소를 lint/타입체크하는 외부 도구도 `.d.ts`만으로 모든 `pb.*`/`SyncServiceClient`
-참조의 실제 타입을 해석할 수 있게 되고, 그 결과 모든 참조가 `any`로 무너지면서 서로 무관해 보이는
-`no-unsafe-*` 에러 수백 개가 쏟아지는 걸 막을 수 있습니다(로컬에서 확인: `.d.ts`만 있는 상태로
-`eslint .`를 돌리면 이와 관련된 findings가 0개입니다).
+로그인하면(설정 → Pumice → "로그인" — 시스템 브라우저에서 서버의 로그인 페이지가 열리고,
+성공하면 토큰이 옵시디언으로 돌아옵니다) 플러그인은 옵시디언이 실행되는 동안 서버와의
+WebSocket 연결을 하나 계속 열어둡니다 — 옵시디언 공식 Sync와 동일하게, 별도의 "실시간
+업데이트 켜기" 토글이나 동기화 주기 설정은 없습니다. 이 연결이 하는 일:
 
-이 `pre*` 스크립트들은 `.ts` 구현 파일이 없을 때만 생성을 실행하므로, `sync.proto`를 수정했다면
-스텁을 명시적으로 재생성하고 갱신된 `.d.ts` 파일 2개를 커밋하세요:
+- 로컬에서 편집한 내용을 서버로 올립니다(짧게 디바운스되어, 키 입력이 연달아 일어나도
+  업로드는 한 번으로 묶입니다).
+- 다른 기기의 변경 사항을 받아서 즉시 반영합니다.
+- push 활동과 무관하게 30초마다 전체 안전망 동기화를 한 번씩 돌려서, 혹시라도 push 알림을
+  놓치더라도 영구히 어긋난 상태로 남지 않게 합니다.
 
-```bash
-npm run proto:gen
-```
+상태바 아이콘은 옵시디언 코어 Sync 아이콘과 동일한 방식으로 이 연결 상태를 보여줍니다 —
+마우스를 올리면 "동기화 중…", "동기화 완료", "동기화 오류" 같은 짧은 상태가 뜹니다. 수동으로
+동기화를 실행하면(리본 아이콘 또는 명령 팔레트) 여전히 토스트 알림이 뜨지만, 위에서 설명한
+자동 백그라운드 동작은 실제로 실패하지 않는 한 조용히 진행됩니다.
 
-사전 준비물:
-- 시스템에 설치된 `protoc`
-- `protoc-gen-js`(`node_modules/.bin/protoc-gen-js`, `npm install`로 설치됨)
-- `protoc-gen-grpc-web` 바이너리(`bin/protoc-gen-grpc-web`, v1.5.0 — 저장소에 넣기엔
-  너무 커서 `npm install`이 `scripts/fetch-protoc-gen-grpc-web.mjs`라는 `postinstall`
-  스크립트로 자동으로 받아옵니다). 사용 중인 플랫폼/아키텍처를 스크립트가 지원하지 않거나
-  다운로드가 실패하면 [grpc-web 릴리스 페이지](https://github.com/grpc/grpc-web/releases/tag/1.5.0)
-  링크를 출력하니 직접 받으면 됩니다.
-
-`npm run proto:gen`은 다음 명령을 직접 실행합니다:
-
-```bash
-protoc \
-  --plugin=protoc-gen-js=./node_modules/.bin/protoc-gen-js \
-  --js_out=import_style=commonjs,binary:./src/generated \
-  --plugin=protoc-gen-grpc-web=./bin/protoc-gen-grpc-web \
-  --grpc-web_out=import_style=typescript,mode=grpcweb:./src/generated \
-  --proto_path=. \
-  sync.proto
-```
+연결이 끊기면(네트워크 순단, 서버 재시작, 노트북 절전 등) 자체적으로 백오프하며 재연결하고,
+끊겨 있던 동안 바뀐 부분만 따라잡습니다 — 재연결할 때마다 vault 전체를 다시 스캔하지 않습니다.
 
 ## 설정
 
 | 설정 | 기본값 | 설명 |
 |---------|---------|-------------|
 | serverHost | localhost | Pumice 서버 주소 |
-| serverPort | 8080 | HTTP + gRPC-Web 포트 |
+| serverPort | 8080 | HTTP + WebSocket 포트 |
 | useTls | false | TLS 사용(원격 서버라면 권장) |
 | deviceName | Obsidian Client | 이 기기를 식별하는 이름 |
 | userName | Obsidian User | 사용자 이름 |
 | syncFiles | true | 파일 동기화 여부 |
 | syncBookmarks | true | 북마크 포함 여부(`.obsidian/bookmarks.json`) |
+| syncPlugins | false | 설치된 커뮤니티 플러그인의 코드/매니페스트 동기화(기본 꺼짐 — 노트 내용보다 신뢰 범위가 큰 실행 코드라서) |
+| syncPluginData | false | 각 플러그인 자체의 `data.json`까지 동기화(기본 꺼짐 — 흔히 API 토큰 등 비밀값이 평문으로 들어있음) |
 | ignorePatterns | 아래 참고 | 동기화에서 제외할 경로 패턴 |
-| autoSync | false | 자동 동기화 활성화 |
-| syncIntervalSeconds | 60 | 자동 동기화 주기(초) |
-| syncOnStartup | false | 시작 시 동기화 |
-| conflictResolution | manual | 충돌 해결 전략(`manual` / `server-wins` / `client-wins` / `merge`) |
+| conflictResolution | server-wins | 비텍스트 파일, 또는 병합 기준이 없는 텍스트 파일에서 어느 쪽이 우선할지(`server-wins` / `client-wins`) — 텍스트 파일(노트, `.json`/`.css`/`.js`/`.base`/`.canvas`)은 이 설정과 무관하게 항상 먼저 3-way 병합을 시도합니다 |
 | enableE2EE | false | 종단간 암호화 활성화 |
 | publishIncludeFolders / publishExcludeFolders | - | 게재 시 포함/제외할 폴더 |
 | localSnapshotIntervalMinutes | 5 | 로컬 스냅샷 간격(분) |
@@ -171,10 +145,14 @@ protoc \
 ```
 pumice/
 ├── src/
-│   ├── main.ts                    # 플러그인 진입점
+│   ├── main.ts                    # 플러그인 진입점, 상시 연결 생명주기 관리
 │   ├── settings.ts                # 설정 타입과 기본값
 │   ├── settingsTab.ts             # 설정 패널 UI
-│   ├── syncClient.ts              # gRPC 동기화 클라이언트
+│   ├── syncClient.ts              # 동기화 오케스트레이션(스캔/E2EE/충돌 해결/해싱)
+│   ├── syncTransport.ts           # syncClient.ts가 사용하는 전송 방식 무관 인터페이스
+│   ├── wsTransport.ts             # WebSocket 프로토콜 계층(프레이밍/하트비트/재연결)
+│   ├── wsSyncTransportAdapter.ts  # wsTransport.ts를 syncTransport.ts 인터페이스에 맞춤
+│   ├── liveUpdates.ts, liveStatus.ts  # 재연결 백오프, 상태바 아이콘/상태 모델
 │   ├── syncHistoryModal.ts        # 동기화 히스토리 UI
 │   ├── fileRecoveryModal.ts       # 파일 복구 UI
 │   ├── publishModal.ts            # 선택적 게재 UI
@@ -185,16 +163,10 @@ pumice/
 │   ├── swipeNavigation.ts         # 모바일 스와이프 내비게이션
 │   ├── tokenStore.ts              # 인증 토큰 저장(App#secretStorage)
 │   ├── errorMessage.ts            # 에러를 문자열로 변환하는 헬퍼
-│   ├── i18n.ts, locales/          # 로컬라이제이션 문자열
-│   └── generated/                 # protoc가 생성
-├── bin/protoc-gen-grpc-web        # postinstall이 받아옴(저장소에 넣기엔 너무 큼)
+│   └── i18n.ts, locales/          # 로컬라이제이션 문자열
 ├── scripts/
-│   ├── fetch-protoc-gen-grpc-web.mjs  # npm install 시 bin/protoc-gen-grpc-web 다운로드
-│   ├── gen-proto.mjs                  # protoc 실행, `npm run proto:gen`에서 사용
-│   ├── ensure-generated.mjs           # src/generated/가 없으면 생성(pre-dev/build/lint)
-│   └── version-bump.mjs               # manifest.json/versions.json 동기화, `npm version`에서 실행
+│   └── version-bump.mjs           # manifest.json/versions.json 동기화, `npm version`에서 실행
 ├── main.js                        # esbuild가 생성
-├── sync.proto                     # gRPC 스키마
 ├── manifest.json                  # 옵시디언 플러그인 매니페스트
 ├── versions.json                  # 플러그인 버전 → minAppVersion 매핑
 └── esbuild.config.mjs             # 빌드 설정

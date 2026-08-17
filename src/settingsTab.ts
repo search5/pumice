@@ -4,6 +4,7 @@ import type SyncPlugin from "./main";
 import { deleteToken, saveE2eePassword } from "./tokenStore";
 import type { ConflictResolution } from "./settings";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
+import { VaultShareModal } from "./vaultShareModal";
 import { describeLiveStatus } from "./liveStatus";
 import { t } from "./i18n";
 import { shouldStopTabPropagation } from "./settingsTabKeyboard";
@@ -101,6 +102,24 @@ export class SyncSettingTab extends PluginSettingTab {
               );
             },
           },
+          {
+            // No control -- a status line, not a setting. The plugin keeps a persistent
+            // connection open as soon as a token is configured, matching real Obsidian core Sync
+            // (see startLiveUpdatesIfNeeded's own comment in main.ts). This is the primary place
+            // to check the connection state: unlike the status bar (main.ts's statusBarItemEl),
+            // Obsidian mobile has no status bar visible by default, but the settings tab renders
+            // the same everywhere. Refreshed via settingTab.update() whenever main.ts's
+            // liveConnectionState changes (see setLiveConnectionState()).
+            name: t("settings.status-live-connection", "Connection status"),
+            visible: () => this.plugin.hasStoredToken,
+            render: (setting) => {
+              setting.settingEl.empty();
+              const { icon, labelKey, labelFallback } = describeLiveStatus(this.plugin.liveConnectionState);
+              const el = setting.settingEl.createEl("p", { cls: "setting-item-description pumice-live-status" });
+              setIcon(el.createSpan(), icon);
+              el.createSpan({ text: t(labelKey, labelFallback) });
+            },
+          },
         ],
       },
       {
@@ -151,65 +170,20 @@ export class SyncSettingTab extends PluginSettingTab {
       },
       {
         type: "group",
-        heading: t("settings.heading-auto-sync", "Auto sync"),
-        items: [
-          {
-            name: t("settings.option-enable-auto-sync", "Enable auto sync"),
-            desc: t("settings.option-enable-auto-sync-desc", "Runs sync automatically on a schedule"),
-            control: { type: "toggle", key: "autoSync" },
-          },
-          {
-            name: t("settings.option-sync-interval", "Sync interval (seconds)"),
-            desc: t("settings.option-sync-interval-desc", "How often auto sync runs (minimum 10 seconds)"),
-            visible: () => this.plugin.settings.autoSync,
-            control: { type: "slider", key: "syncIntervalSeconds", min: 10, max: 3600, step: 10 },
-          },
-          {
-            name: t("settings.option-sync-on-startup", "Sync on startup"),
-            desc: t("settings.option-sync-on-startup-desc", "Runs sync automatically when Obsidian starts"),
-            control: { type: "toggle", key: "syncOnStartup" },
-          },
-          {
-            name: t("settings.option-live-updates", "Live updates"),
-            desc: t(
-              "settings.option-live-updates-desc",
-              "Keeps a connection open to the server so changes from other devices sync within seconds, instead of waiting for the next auto sync. Keep auto sync on too as a fallback in case this connection drops silently."
-            ),
-            control: { type: "toggle", key: "liveUpdates" },
-          },
-          {
-            // No control -- a status line, not a setting. This is the primary place to check the
-            // live-updates connection state: unlike the status bar (main.ts's statusBarItemEl),
-            // Obsidian mobile has no status bar visible by default, but the settings tab renders
-            // the same everywhere. Refreshed via settingTab.update() whenever main.ts's
-            // liveConnectionState changes (see setLiveConnectionState()).
-            name: t("settings.status-live-connection", "Connection status"),
-            visible: () => this.plugin.settings.liveUpdates,
-            render: (setting) => {
-              setting.settingEl.empty();
-              const { icon, labelKey, labelFallback } = describeLiveStatus(this.plugin.liveConnectionState);
-              const el = setting.settingEl.createEl("p", { cls: "setting-item-description pumice-live-status" });
-              setIcon(el.createSpan(), icon);
-              el.createSpan({ text: t(labelKey, labelFallback) });
-            },
-          },
-        ],
-      },
-      {
-        type: "group",
         heading: t("settings.heading-conflict-resolution", "Conflict resolution"),
         items: [
           {
             name: t("settings.option-conflict-resolution", "Conflict resolution method"),
-            desc: t("settings.option-conflict-resolution-desc", "How to handle conflicts between client and server files"),
+            desc: t(
+              "settings.option-conflict-resolution-desc",
+              "Text files (notes, .json, .css, .js, .base, .canvas) are always merged automatically first — this setting only decides which side wins for other file types, or for a text file with no earlier synced version to merge against. Whichever side doesn't win is always kept as a .sync-conflict backup copy, never silently discarded."
+            ),
             control: {
               type: "dropdown",
               key: "conflictResolution",
               options: {
-                manual: t("settings.option-conflict-manual", "Manual (choose yourself)"),
                 "server-wins": t("settings.option-conflict-server-wins", "Server wins"),
                 "client-wins": t("settings.option-conflict-client-wins", "Client wins"),
-                merge: t("settings.option-conflict-merge", "Auto-merge (mark real conflicts inline)"),
               } satisfies Record<ConflictResolution, string>,
             },
           },
@@ -240,6 +214,48 @@ export class SyncSettingTab extends PluginSettingTab {
                 text.inputEl.type = "password";
                 text.inputEl.autocomplete = "off";
               });
+            },
+          },
+        ],
+      },
+      {
+        type: "group",
+        heading: t("settings.heading-vault-sharing", "Vault sharing"),
+        items: [
+          {
+            name: t("settings.option-manage-sharing", "Manage sharing…"),
+            desc: t("settings.option-manage-sharing-desc", "Invite other accounts to sync this vault -- they get the same full read/write access you have."),
+            visible: () => !this.plugin.settings.sharedVaultOwner,
+            action: () => {
+              new VaultShareModal(this.app, this.plugin).open();
+            },
+          },
+          {
+            name: t("settings.option-shared-vault-owner", "Sync someone else's vault"),
+            desc: t("settings.option-shared-vault-owner-desc", "The account name of the vault owner who invited you. Leave empty if you own this vault yourself."),
+            control: { type: "text", key: "sharedVaultOwner", placeholder: t("settings.placeholder-shared-vault-owner", "Owner's account name") },
+          },
+          {
+            name: t("settings.option-leave-shared-vault", "Leave this shared vault"),
+            desc: t("settings.option-leave-shared-vault-desc", "Removes your access -- ask the owner to re-invite you if you need it back."),
+            visible: () => Boolean(this.plugin.settings.sharedVaultOwner),
+            action: () => {
+              void (async () => {
+                const owner = this.plugin.settings.sharedVaultOwner;
+                if (!owner) return;
+                try {
+                  const client = await this.plugin.getSyncClient();
+                  await client.leaveSharedVault(owner);
+                  this.plugin.settings.sharedVaultOwner = "";
+                  await this.plugin.saveSettings();
+                  this.update();
+                  new Notice(t("settings.msg-left-shared-vault", "Left the shared vault."));
+                } catch (e: unknown) {
+                  new Notice(t("settings.msg-leave-shared-vault-failed", "Failed to leave: {{error}}", {
+                    error: e instanceof Error ? e.message : String(e),
+                  }));
+                }
+              })();
             },
           },
         ],
@@ -342,6 +358,9 @@ export class SyncSettingTab extends PluginSettingTab {
         btn.onClick(async () => {
           await deleteToken(this.app);
           this.plugin.hasStoredToken = false;
+          // Drops the persistent connection right away instead of leaving it open (still
+          // authenticated under the now-deleted token) until it happens to drop on its own.
+          this.plugin.disconnectTransport();
           new Notice(t("settings.msg-token-deleted", "Token deleted"));
           onTokenChanged();
         });

@@ -6,15 +6,6 @@ import fs from "fs";
 
 const prod = process.argv[2] === "production";
 
-// Copy sync.proto
-try {
-  fs.copyFileSync("../proto/sync.proto", "sync.proto");
-  console.log("Copied sync.proto successfully.");
-} catch (e) {
-  console.error("Failed to copy sync.proto:", e);
-}
-
-
 const obsidianPluginPaths = [
   "/home/jiho/Documents/nos/.obsidian/plugins/pumice",
   "/home/jiho/.local/Obsidian/.obsidian/plugins/pumice",
@@ -31,9 +22,6 @@ const copyToObsidianPlugin = {
           if (fs.existsSync(pluginPath)) {
             fs.copyFileSync("main.js", `${pluginPath}/main.js`);
             fs.copyFileSync("manifest.json", `${pluginPath}/manifest.json`);
-            if (fs.existsSync("sync.proto")) {
-              fs.copyFileSync("sync.proto", `${pluginPath}/sync.proto`);
-            }
             if (fs.existsSync("styles.css")) {
               fs.copyFileSync("styles.css", `${pluginPath}/styles.css`);
             }

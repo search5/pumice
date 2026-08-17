@@ -1,18 +1,15 @@
-import { SyncServiceClient } from "./generated/SyncServiceClientPb";
-import * as pb from "./generated/sync_pb";
-import * as grpcWeb from "grpc-web";
 import { TFile, Vault, FileManager, Notice, requestUrl } from "obsidian";
 import { merge as mergeDiff3 } from "node-diff3";
 import { ContentHashCache } from "./contentHashCache";
 import type { LastSyncedHashStore } from "./lastSyncedHashStore";
 import { isTextFilePath } from "./textFileTypes";
-import { mapWithConcurrency, streamWithConcurrency } from "./concurrency";
+import { mapWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
 import { buildPluginSnapshot, detectRemovedPluginPaths, filterSyncablePluginPaths } from "./pluginSync";
 import { derivePluginIdsFromPaths } from "./pluginReload";
-import { resolveEffectiveConflictResolution } from "./bookmarksSync";
 import { groupIntoBatches, runBatchedDownloads } from "./batching";
+import type { HistoryVersionEntry, PurgeResult, RemoteFileMetaWire, SyncTransport, VaultSize } from "./syncTransport";
 
 // e2eePassword isn't part of SyncPluginSettings itself (it lives in app.secretStorage, see
 // tokenStore.ts) -- callers splice it in when constructing a SyncClient, so this is the actual
@@ -46,17 +43,65 @@ export type SyncRetryCallback = (info: { delayMs: number; retriesLeft: number })
 // directly, so this class stays decoupled from Obsidian's App/local-storage specifics.
 export type SyncLogCallback = (level: "debug" | "warn", message: string) => void;
 
-// Shape of a single /api/history entry, as returned by the server. Structurally compatible with
-// syncHistoryModal.ts's own HistoryVersion (kept separate there since that's a UI-facing type).
-export interface HistoryVersionEntry {
-  history_id: number;
-  modified_at_ms: number;
-  size_bytes: number;
-  content_hash: string;
-  device_name: string;
-  user_name: string;
-  deleted?: boolean;
-  related_path?: string | null;
+// Re-exported for callers that imported it from here before the 2026-08 WS history migration
+// follow-up moved the actual definition to syncTransport.ts (see that file's own comment).
+export type { HistoryVersionEntry } from "./syncTransport";
+
+// Optional per-file frontmatter overrides publishFile() forwards to the server as obs-* headers
+// (see 19_permalink_지원.md / 20_description_image_지원.md /
+// 22_aliases_리다이렉트_및_파비콘_자동감지.md) -- grouped into one options object rather than
+// positional params since a third field (image) already made positional args unreadable.
+export interface PublishFileMeta {
+  permalink?: string | null;
+  description?: string | null;
+  image?: string | null;
+  aliases?: string[] | null;
+}
+
+// First batch of real Obsidian Publish's "Change site options" dialog (~20 settings total, see
+// 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest (graph/outline/backlinks/
+// custom domain/collaboration) need real new site features, not just a stored value, so they're
+// deferred (see 25_사이트_옵션_1차_구현.md). showSearch/showNavigation/slidingWindowMode were
+// each added once their feature landed (28_실제_아키텍처_전환_Phase1_노트본문.md's Phase 3/5) --
+// same "add the option when its feature exists" pattern as custom domain unblocking
+// googleAnalytics/publish.js (26_커스텀_도메인_지원.md). navigationOrdering/
+// navigationHiddenItems are settable via this same API (used server-side to build the
+// navigation sidebar) but have no dedicated "Customize sidebar" drag-and-drop UI here yet --
+// real Obsidian's own version of that is a separate sub-dialog, out of scope for this phase.
+// defaultTheme/showThemeToggle (see 33_실제_아키텍처_전환_테마_전환.md) -- defaultTheme is
+// "light" | "dark" | "system", not a boolean (real Obsidian's own dropdown has three options).
+// googleAnalytics is included here because it's settable via this same API, but the server
+// deliberately never renders it (same custom-domain precondition as publish.js).
+export interface PublishSiteOptions {
+  siteName: string;
+  indexFile: string;
+  logo: string;
+  noindex: boolean;
+  hideTitle: boolean;
+  readableLineLength: boolean;
+  strictLineBreaks: boolean;
+  googleAnalytics: string;
+  showSearch: boolean;
+  showNavigation: boolean;
+  slidingWindowMode: boolean;
+  navigationOrdering: string[];
+  navigationHiddenItems: string[];
+  defaultTheme: "light" | "dark" | "system";
+  showThemeToggle: boolean;
+}
+
+// Real Obsidian's apiCustomUrl(url, redirect) response shape (see 26_커스텀_도메인_지원.md).
+export interface CustomDomainConfig {
+  url: string;
+  redirect: boolean;
+}
+
+// Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- identifies a Publish
+// site that isn't this account's own vault, for the publish-list/upload/remove/download methods
+// below to act on as an accepted collaborator instead of the caller's own vault.
+export interface RemoteSite {
+  owner: string;
+  vaultId: string;
 }
 
 // The four helpers below try the Vault API first, and only fall back to the Adapter API for paths
@@ -168,101 +213,8 @@ function formatPathList(paths: string[]): string {
   return paths.length > MAX_SHOWN ? `${shown}, and ${paths.length - MAX_SHOWN} more` : shown;
 }
 
-// Uint8Array concatenation utility
-const concatUint8Arrays = (arrays: Uint8Array[]): Uint8Array => {
-  let totalLength = arrays.reduce((acc, val) => acc + val.length, 0);
-  let result = new Uint8Array(totalLength);
-  let offset = 0;
-  for (let arr of arrays) {
-    result.set(arr, offset);
-    offset += arr.length;
-  }
-  return result;
-};
-
-function getMetadata(token: string, settings: ClientSettings): grpcWeb.Metadata {
-  return {
-    "authorization": `Bearer ${token}`,
-    "x-device-name": encodeURIComponent(settings.deviceName || "Unknown Device"),
-    "x-user-name": encodeURIComponent(settings.userName || "Unknown User")
-  };
-}
-
-// ─── Streaming upload (#4_옵션B_구현_계획.md 설계 B) ─────────────────────────────────
-//
-// Envelope wire format matches pumice-server's EnvelopeStreamParser (streaming.py) exactly:
-// 1 byte flags (bit 0x80 = trailer, no payload) + 4 bytes big-endian payload length + payload.
-// Sent as raw bytes (not base64) -- confirmed against the server, which does not base64-decode
-// this endpoint's body the way the gRPC-Web-text resource does for UploadFiles.
-
-export function encodeEnvelopeFrame(payload: Uint8Array): Uint8Array {
-  const frame = new Uint8Array(5 + payload.length);
-  new DataView(frame.buffer).setUint32(1, payload.length, false);
-  frame.set(payload, 5);
-  return frame;
-}
-
-// Incrementally parses enveloped frames out of a fetch() response body stream, calling onFrame
-// once per complete frame as soon as its bytes have all arrived -- mirrors the incremental
-// parsing EnvelopeStreamParser does server-side, just for the response direction instead of the
-// request direction. Doesn't assume a stream chunk boundary lines up with a frame boundary.
-export async function readEnvelopedResponses(
-  body: ReadableStream<Uint8Array>,
-  onFrame: (flags: number, payload: Uint8Array) => void
-): Promise<void> {
-  const reader = body.getReader();
-  let buffer = new Uint8Array(0);
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (value && value.length > 0) {
-      const merged = new Uint8Array(buffer.length + value.length);
-      merged.set(buffer, 0);
-      merged.set(value, buffer.length);
-      buffer = merged;
-    }
-
-    while (buffer.length >= 5) {
-      const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-      const flags = view.getUint8(0);
-      const length = view.getUint32(1, false);
-      const frameEnd = 5 + length;
-      if (buffer.length < frameEnd) break; // wait for more bytes
-      onFrame(flags, buffer.slice(5, frameEnd));
-      buffer = buffer.slice(frameEnd);
-    }
-
-    if (done) break;
-  }
-}
-
-// fetch()'s streaming request bodies (ReadableStream + duplex: 'half') require HTTP/2 + HTTPS --
-// Chrome docs: "The fetch will be rejected if the connection is HTTP/1.x." pumice-server itself
-// only ever speaks plain HTTP/1.1 (see #4_옵션B_구현_계획.md); TLS+HTTP/2 has to come from a
-// reverse proxy in front of it. If the user hasn't configured TLS, the actual connection can't be
-// HTTP/2 regardless of what the browser API itself supports, so skip straight to the
-// non-streaming fallback instead of attempting (and always failing) the duplex feature-detection.
-export function supportsStreamingUpload(settings: ClientSettings): boolean {
-  if (!settings.useTls) return false;
-
-  // Standard feature-detection pattern from Chrome's documentation: construct a Request with a
-  // stream body and check whether `duplex` is actually read (vs. silently ignored, which is what
-  // happens in browsers that don't support streaming request bodies at all).
-  let duplexAccessed = false;
-  new Request("https://example.com", {
-    method: "POST",
-    body: new ReadableStream(),
-    // @ts-ignore -- duplex is not yet in the TS lib.dom fetch types
-    get duplex() {
-      duplexAccessed = true;
-      return "half";
-    },
-  });
-  return duplexAccessed;
-}
-
 export class SyncClient {
-  private client: SyncServiceClient;
+  private transport: SyncTransport;
   private vault: Vault;
   private fileManager: FileManager;
   private pluginDir: string;
@@ -397,6 +349,7 @@ export class SyncClient {
   }
 
   constructor(
+    transport: SyncTransport,
     vault: Vault,
     fileManager: FileManager,
     pluginDir: string,
@@ -413,6 +366,7 @@ export class SyncClient {
     lastKnownPluginPaths?: Record<string, number>,
     updateLastKnownPluginPaths?: (paths: Record<string, number>) => Promise<void>
   ) {
+    this.transport = transport;
     this.vault = vault;
     this.fileManager = fileManager;
     this.pluginDir = pluginDir;
@@ -428,10 +382,6 @@ export class SyncClient {
     this.lastSyncedHashStore = lastSyncedHashStore;
     this.lastKnownPluginPaths = lastKnownPluginPaths ?? {};
     this.updateLastKnownPluginPaths = updateLastKnownPluginPaths;
-
-    const protocol = settings.useTls ? "https" : "http";
-    const hostUrl = `${protocol}://${settings.serverHost}:${settings.serverPort}`;
-    this.client = new SyncServiceClient(hostUrl);
   }
 
   // Always reports the final item of a phase (done === total) so the UI never gets stuck showing a
@@ -521,15 +471,14 @@ export class SyncClient {
   // Builds one file's full [header, data..., eof] FileChunk sequence -- shared by both upload
   // paths below (streaming and the batched gRPC-Web fallback), which only differ in how these
   // chunks get onto the wire, not in how they're built.
-  private async buildFileChunks(
+  // Reuses the buffer read (and, under E2EE, encrypted) during the scan step above when
+  // available -- this is what avoids reading/re-encrypting every file a second time here, which
+  // is otherwise unavoidable on the very first sync since need_upload == every file.
+  private async prepareUploadFile(
     uploadPath: string,
-    vaultId: string,
     scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>
-  ): Promise<pb.FileChunk[]> {
+  ): Promise<{ path: string; data: ArrayBuffer; contentHash: string; mtimeMs: number } | null> {
     try {
-      // Reuse the buffer read (and, under E2EE, encrypted) during the scan step above when
-      // available -- this is what avoids reading/re-encrypting every file a second time here,
-      // which is otherwise unavoidable on the very first sync since need_upload == every file.
       const cached = scannedWireBuffers.get(uploadPath);
       let sendBuffer: ArrayBuffer;
       let contentHash: string;
@@ -544,7 +493,7 @@ export class SyncClient {
         scannedWireBuffers.delete(uploadPath);
       } else {
         const exists = await existsByPath(this.vault, uploadPath);
-        if (!exists) return [];
+        if (!exists) return null;
 
         const arrayBuffer = await readBinaryByPath(this.vault, uploadPath);
         sendBuffer = arrayBuffer;
@@ -562,190 +511,78 @@ export class SyncClient {
         mtime = stat ? stat.mtime : Date.now();
       }
 
-      const fileChunks: pb.FileChunk[] = [];
-
-      // Header chunk
-      const headerChunk = new pb.FileChunk();
-      const header = new pb.ChunkHeader();
-      header.setVaultId(vaultId);
-      header.setPath(uploadPath);
-      header.setTotalBytes(sendBuffer.byteLength);
-      header.setModifiedAtMs(mtime);
-      headerChunk.setHeader(header);
-      fileChunks.push(headerChunk);
-
-      // Data chunks
-      const CHUNK_SIZE = 256 * 1024;
-      let sequence = 0;
-      for (let offset = 0; offset < sendBuffer.byteLength; offset += CHUNK_SIZE) {
-        const chunk = sendBuffer.slice(offset, offset + CHUNK_SIZE);
-        const dataChunk = new pb.FileChunk();
-        const dataPayload = new pb.ChunkData();
-        dataPayload.setPath(uploadPath);
-        dataPayload.setSequence(sequence++);
-        dataPayload.setData(new Uint8Array(chunk));
-        dataChunk.setData(dataPayload);
-        fileChunks.push(dataChunk);
-      }
-
-      // EOF chunk
-      const eofChunk = new pb.FileChunk();
-      const eof = new pb.ChunkEOF();
-      eof.setPath(uploadPath);
-      eof.setContentHash(contentHash);
-      eofChunk.setEof(eof);
-      fileChunks.push(eofChunk);
-
-      return fileChunks;
+      return { path: uploadPath, data: sendBuffer, contentHash, mtimeMs: mtime };
     } catch (err) {
-      console.error(`Error preparation ${uploadPath} for upload:`, err);
-      return [];
+      console.error(`Error preparing ${uploadPath} for upload:`, err);
+      return null;
     }
-  }
-
-  // True client-streaming upload (#4_옵션B_구현_계획.md 설계 B): one open connection, no "batch"
-  // concept at all -- chunks are enqueued onto the request body as each file finishes being
-  // prepared (overlapped up to UPLOAD_PREP_CONCURRENCY at a time via streamWithConcurrency), and
-  // the server (pumice-server's StreamingUploadRequest/EnvelopeStreamParser) parses and writes
-  // them to disk incrementally as they arrive rather than after the whole request is buffered.
-  //
-  // Files must be streamed in order, one fully completed (header, all data, eof) before the next
-  // file's header starts -- the server tracks only one "current file" per connection and discards
-  // an unfinished one if a new header arrives (mirrors the batched path's per-file ordering,
-  // which was always implicit there since each file's triplet was already contiguous within one
-  // serialized UploadBatch message). streamWithConcurrency's in-order yield guarantee is what
-  // keeps overlapped preparation from accidentally interleaving two files' chunks on the wire.
-  private async uploadFilesStreaming(
-    needUploadList: string[],
-    vaultId: string,
-    scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>,
-    onAck: (ack: pb.UploadAck) => void
-  ): Promise<void> {
-    const UPLOAD_PREP_CONCURRENCY = 8;
-
-    const bodyStream = new ReadableStream<Uint8Array>({
-      start: async (controller) => {
-        try {
-          for await (const fileChunks of streamWithConcurrency(
-            needUploadList,
-            UPLOAD_PREP_CONCURRENCY,
-            (uploadPath) => this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
-          )) {
-            for (const chunk of fileChunks) {
-              controller.enqueue(encodeEnvelopeFrame(chunk.serializeBinary()));
-            }
-          }
-          controller.close();
-        } catch (err) {
-          controller.error(err);
-        }
-      },
-    });
-
-    const protocol = this.settings.useTls ? "https" : "http";
-    const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/obsidian.sync.v1.SyncService/UploadFilesStream`;
-
-    // requestUrl() (httpFetch() above) can't do this: its body is `string | ArrayBuffer`, with no
-    // ReadableStream/duplex option -- the entire point of this method is streaming a request body
-    // that's produced incrementally, which requestUrl has no way to express. Raw fetch() is the only
-    // API that supports it, and it's exactly what supportsStreamingUpload() gates this call on.
-    // Routed through window (unknown-cast) rather than the bare global, since
-    // eslint-comments/no-restricted-disable blocks suppressing the obsidianmd no-restricted-globals
-    // rule via a disable comment outright -- this is what actually keeps the warning from firing
-    // while still calling the exact same fetch() implementation.
-    const windowFetch = (window as unknown as { fetch: typeof fetch }).fetch;
-    const resp = await windowFetch(url, {
-      method: "POST",
-      // @ts-ignore -- duplex is not yet in the TS lib.dom fetch types
-      duplex: "half",
-      headers: {
-        "authorization": `Bearer ${this.token}`,
-        "x-device-name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
-        "x-user-name": encodeURIComponent(this.settings.userName || "Unknown User"),
-      },
-      body: bodyStream,
-    });
-
-    if (!resp.ok || !resp.body) {
-      throw new Error(`Streaming upload request failed: HTTP ${resp.status}`);
-    }
-
-    await readEnvelopedResponses(resp.body, (flags, payload) => {
-      if (flags & 0x80) return; // trailer frame -- marks end of the ack stream, no payload
-      onAck(pb.UploadAck.deserializeBinary(payload));
-    });
   }
 
   // Uploads exactly `paths` (a subset of needUploadList on the first call, a shrinking list of
-  // previously-failed paths on retries -- see internalSync's retry loop) via whichever transport
-  // is available. Failures are reported through `onAck` like any other ack, not thrown -- a single
-  // bad file must not abort the rest of the batch/stream.
+  // previously-failed paths on retries -- see internalSync's retry loop) via the transport.
+  // Failures are reported through `onAck` like any other ack, not thrown -- a single bad file
+  // must not abort the rest of the batch.
   private async uploadFileBatch(
     paths: string[],
     vaultId: string,
     scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>,
     sizeByPath: Map<string, number>,
-    onAck: (ack: pb.UploadAck) => void
+    onAck: (ack: { path: string; ok: boolean; error: string }) => void
   ): Promise<void> {
     if (paths.length === 0) return;
 
-    if (supportsStreamingUpload(this.settings)) {
-      await this.uploadFilesStreaming(paths, vaultId, scannedWireBuffers, onAck);
-      return;
-    }
-
-    // Split into multiple batches bounded by byte size and file count. A single UploadBatch
-    // covering the whole first-sync upload set would otherwise have to sit fully serialized in
-    // memory before the first byte goes out; per the benchmark in #4_구현_계획.md (real generated
-    // protobuf classes, ~1.1GB synthetic upload), batching this cut peak RSS by ~17x and was
-    // *faster* to prepare/serialize too, not slower -- avoiding the reallocation cost of building
-    // one huge array/message. MAX_FILES_PER_BATCH exists because byte size alone isn't enough of a
-    // cap: a real vault is dominated by many small notes, so a byte-only cap let one batch swallow
-    // 95%+ of the file list in that same benchmark.
+    // Split into multiple batches bounded by byte size and file count -- keeps only one batch's
+    // worth of prepared (already-encrypted, for E2EE) file bytes in memory at a time instead of
+    // the whole need-upload set at once, same reasoning as runBatchedDownloads' batching.
+    // MAX_FILES_PER_BATCH exists because byte size alone isn't enough of a cap: a real vault is
+    // dominated by many small notes, so a byte-only cap lets one batch swallow nearly the whole
+    // list before it fills up.
     const BATCH_TARGET_BYTES = 20 * 1024 * 1024;
     const MAX_FILES_PER_BATCH = 500;
     const uploadBatches = groupIntoBatches(paths, (p) => sizeByPath.get(p) ?? 0, BATCH_TARGET_BYTES, MAX_FILES_PER_BATCH);
-    const metadata = getMetadata(this.token, this.settings);
 
     for (const batchPaths of uploadBatches) {
-      const uploadBatch = new pb.UploadBatch();
-
-      // Same fix as the scan step above and for the same reason: reading/hashing each file to
-      // upload one at a time is an O(files) chain of Capacitor-bridge round trips. This overlaps
-      // them instead. mapWithConcurrency preserves per-item result order, so flattening
-      // perFileChunks reproduces exactly the same overall chunk sequence the old sequential loop
-      // would have -- each file's own [header, data..., eof] triplet stays intact and in order,
-      // only which files finish preparing in what wall-clock order changes.
+      // Reading/hashing (and, under E2EE, encrypting) each file one at a time is an O(files)
+      // chain of Capacitor-bridge round trips -- this overlaps them instead. mapWithConcurrency
+      // preserves per-item result order, though the transport doesn't depend on that ordering
+      // (each prepared file carries its own path).
       const UPLOAD_PREP_CONCURRENCY = 8;
-      const perFileChunks = await mapWithConcurrency(batchPaths, UPLOAD_PREP_CONCURRENCY, (uploadPath) =>
-        this.buildFileChunks(uploadPath, vaultId, scannedWireBuffers)
+      const prepared = await mapWithConcurrency(batchPaths, UPLOAD_PREP_CONCURRENCY, (uploadPath) =>
+        this.prepareUploadFile(uploadPath, scannedWireBuffers)
       );
+      const files = prepared.filter((f): f is NonNullable<typeof f> => f !== null);
 
-      uploadBatch.setChunksList(perFileChunks.flat());
-
-      // Handle the server's streaming response for this one batch before preparing the next --
-      // deliberately sequential (no pipelining of batch N+1's prep against batch N's send/ack
-      // wait) for this first version; see #4_구현_계획.md "향후 개선" for why that tradeoff was
-      // deferred rather than built without measuring it first.
-      await new Promise<void>((resolve, reject) => {
-        const uploadStream = this.client.uploadFiles(uploadBatch, metadata);
-        uploadStream.on("data", onAck);
-        uploadStream.on("end", () => resolve());
-        uploadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
-      });
+      // Handle this batch's acks before preparing the next -- deliberately sequential (no
+      // pipelining of batch N+1's prep against batch N's send/ack wait), same tradeoff as before.
+      await this.transport.uploadBatch(vaultId, files, onAck);
     }
+  }
+
+  private conflictBackupPath(path: string): string {
+    const ext = pathUtil.extname(path);
+    const baseName = path.substring(0, path.length - ext.length);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    return `${baseName}.sync-conflict-${timestamp}${ext}`;
   }
 
   // Backs up `path`'s current local content to `<name>.sync-conflict-<timestamp>.<ext>` before
   // it's about to be replaced -- shared by every conflictResolution path that needs this safety
-  // net (manual, merge's can't-attempt-at-all fallback, and merge's marked-conflict case).
+  // net (manual, server-wins, merge's can't-attempt-at-all fallback, and merge's marked-conflict
+  // case).
   private async backupLocalVersion(path: string): Promise<string> {
     const oldData = await readBinaryByPath(this.vault, path);
-    const ext = pathUtil.extname(path);
-    const baseName = path.substring(0, path.length - ext.length);
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const conflictPath = `${baseName}.sync-conflict-${timestamp}${ext}`;
+    const conflictPath = this.conflictBackupPath(path);
     await writeBinaryByPath(this.vault, conflictPath, oldData);
+    return conflictPath;
+  }
+
+  // client-wins keeps the local file exactly as-is (never overwritten), but the losing remote
+  // edit -- a real change made on another device -- must not just vanish either: it's written
+  // alongside as a conflict copy instead of being silently discarded, the same safety net every
+  // other resolution mode gets for whichever side loses.
+  private async backupRemoteVersion(path: string, data: ArrayBuffer): Promise<string> {
+    const conflictPath = this.conflictBackupPath(path);
+    await writeBinaryByPath(this.vault, conflictPath, data);
     return conflictPath;
   }
 
@@ -803,206 +640,201 @@ export class SyncClient {
   ): Promise<{ downloadedCount: number; failedPaths: string[] }> {
     if (paths.length === 0) return { downloadedCount: 0, failedPaths: [] };
 
-    const metadata = getMetadata(this.token, this.settings);
-    const downloadReq = new pb.DownloadBatchRequest();
-    downloadReq.setVaultId(vaultId);
-    downloadReq.setPathsList(paths);
+    // onFile returns whether the file was accepted -- the transport tallies
+    // downloadedCount/failedPaths from that and from any exception it throws (see
+    // WsSyncTransportAdapter.downloadBatch), so this no longer needs its own outer try/catch.
+    return this.transport.downloadBatch(vaultId, paths, async (file) => {
+      this.reportProgress("download", ++progressState.done, progressState.total);
 
-    let downloadedCount = 0;
-    const failedPaths: string[] = [];
+      const calculatedHash = await sha256(file.data);
+      if (calculatedHash !== file.contentHash) {
+        console.error(`Hash verification failed for downloaded file: ${file.path}`);
+        return false;
+      }
 
-    await new Promise<void>((resolve, reject) => {
-      const downloadStream = this.client.downloadFiles(downloadReq, metadata);
-      const fileBuffers = new Map<string, { mtime: number; chunks: Uint8Array[] }>();
+      const currentPath = file.path;
+      const currentMtime = file.mtimeMs;
 
-      // Wrapped so the listener itself stays synchronous (as EventEmitter#on expects) while the
-      // async body inside is still fully error-guarded -- an unguarded throw in here (e.g. the
-      // sha256 call below) would otherwise become an unhandled promise rejection instead of the
-      // same "log and move on to the next file" handling every other failure path here gets.
-      downloadStream.on("data", (chunk: pb.FileChunk) => {
-        void (async () => {
-        try {
-        if (chunk.hasHeader()) {
-          const header = chunk.getHeader()!;
-          fileBuffers.set(header.getPath(), {
-            mtime: Number(header.getModifiedAtMs()),
-            chunks: [],
-          });
-        } else if (chunk.hasData()) {
-          const dataPayload = chunk.getData()!;
-          const buf = fileBuffers.get(dataPayload.getPath());
-          if (buf) {
-            buf.chunks.push(dataPayload.getData_asU8());
+      await this.ensureFolderForPath(currentPath);
+
+      const exists = await existsByPath(this.vault, currentPath);
+
+      let plainData: ArrayBuffer = file.data;
+      // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
+      // as-is for the cache when E2EE is off, since it's then already the plaintext hash
+      // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
+      // the buffer's already in memory). Computed up front (moved ahead of the conflict
+      // check below) since the unconditional text merge attempt needs this plaintext as the
+      // "remote" side of a 3-way merge, and client-wins needs it too, to back up the losing side.
+      let plainHashForCache = calculatedHash;
+      if (this.settings.enableE2EE && this.settings.e2eePassword) {
+        const key = await this.getE2eeKey();
+        plainData = await this.decryptData(file.data, key);
+        plainHashForCache = await sha256(plainData);
+      }
+
+      let handledByMerge = false;
+
+      if (exists) {
+        // Text files always attempt a 3-way merge first, regardless of settings.conflictResolution
+        // -- tryAutoMergeConflict() itself gates on isTextFilePath() (see its own comment), so
+        // this call is unconditional here (see 16_conflict_resolution_텍스트_상시병합.md). It
+        // still returns null when it genuinely can't attempt one (not text, no
+        // lastSyncedHashStore, no recorded base hash, or the base version was pruned from server
+        // history) -- that's the only remaining case where conflictResolution's
+        // server-wins/client-wins fallback applies to a text file; it always applies to a
+        // non-text file, since merge is never attempted for those at all.
+        const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
+
+        if (mergeAttempt !== null && !mergeAttempt.hasConflictMarkers) {
+          // Clean merge -- local's and remote's edits didn't touch the same lines. If the
+          // result is actually identical to what the server just sent (the common case for
+          // a config-dir file like community-plugins.json when this device made no local
+          // edits since its last sync), there is no real merge to speak of -- treat it as an
+          // ordinary "adopt remote" download instead of a synthetic local edit. Doing the
+          // latter unconditionally used to rely on this write being picked up by the
+          // debounced auto-sync machinery and re-uploaded so lastSyncedHashStore would catch
+          // up; whenever that indirect re-upload didn't happen promptly, the next sync's
+          // Delta would still see this path as unresolved and re-offer it for merge, so the
+          // exact same "Auto-merged" notice kept firing every sync even though nothing had
+          // actually changed on either side.
+          const remoteText = new TextDecoder("utf-8").decode(plainData);
+          if (mergeAttempt.mergedText !== remoteText) {
+            const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
+            // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
+            // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
+            // the merged result through the ordinary upload path on the next pass -- no
+            // special immediate-reupload plumbing needed, since this write's mtime will be
+            // newer than the server's stored version and Delta will naturally resolve it to
+            // need_upload next time.
+            await writeBinaryByPath(this.vault, currentPath, mergedData);
+            new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
+            const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+            if (this.hashCache && mergedFile instanceof TFile) {
+              this.hashCache.set(mergedFile, await sha256(mergedData));
+            }
+            handledByMerge = true;
           }
-        } else if (chunk.hasEof()) {
-          const eofPayload = chunk.getEof()!;
-          const eofPath = eofPayload.getPath();
-          const buf = fileBuffers.get(eofPath);
-          if (!buf) return;
-
-          const fileDataBytes = concatUint8Arrays(buf.chunks);
-          fileBuffers.delete(eofPath);
-          this.reportProgress("download", ++progressState.done, progressState.total);
-
-          const calculatedHash = await sha256(fileDataBytes.buffer as ArrayBuffer);
-          if (calculatedHash !== eofPayload.getContentHash()) {
-            console.error(`Hash verification failed for downloaded file: ${eofPath}`);
-            failedPaths.push(eofPath);
-            return;
-          }
-
+          // else: falls through to the ordinary "adopt remote" write below -- no local content
+          // is being discarded, so no backup and no synthetic-edit notice.
+        } else if (mergeAttempt !== null) {
+          // Some region really was edited on both sides -- everything else already merged
+          // automatically; only that region is left, marked inline (git-style) for the user
+          // to resolve by hand. Back up the pre-merge local content first, same safety net as
+          // the fallback path below, then write the merged-with-markers file itself via
+          // writeSelfPath so it doesn't immediately re-upload with unresolved markers still in
+          // it -- the user's own next edit (removing the markers) is what should trigger the
+          // next sync.
           try {
-            const currentPath = eofPath;
-            const currentMtime = buf.mtime;
-
-            await this.ensureFolderForPath(currentPath);
-
-            // bookmarks.json always merges, regardless of the configured conflictResolution --
-            // see #9_북마크_강제병합_및_기본값_개선_구현_계획.md.
-            const effectiveConflictResolution = resolveEffectiveConflictResolution(
-              currentPath, this.vault.configDir, this.settings.conflictResolution
-            );
-
-            const exists = await existsByPath(this.vault, currentPath);
-            if (exists && effectiveConflictResolution === "client-wins") {
-              return;
-            }
-
-            let plainData: ArrayBuffer = fileDataBytes.buffer as ArrayBuffer;
-            // calculatedHash is the hash of the wire bytes (ciphertext when E2EE is on) — reused
-            // as-is for the cache when E2EE is off, since it's then already the plaintext hash
-            // Publish needs; recomputed from the decrypted bytes otherwise (cheap: no extra I/O,
-            // the buffer's already in memory). Computed up front (moved ahead of the conflict
-            // check below) since the "merge" conflict mode needs this plaintext as the "remote"
-            // side of a 3-way merge, not just for the eventual write.
-            let plainHashForCache = calculatedHash;
-            if (this.settings.enableE2EE && this.settings.e2eePassword) {
-              const key = await this.getE2eeKey();
-              plainData = await this.decryptData(fileDataBytes.buffer as ArrayBuffer, key);
-              plainHashForCache = await sha256(plainData);
-            }
-
-            let handledByMerge = false;
-
-            if (exists) {
-              let needsBackupAndOverwrite = effectiveConflictResolution === "manual";
-
-              if (effectiveConflictResolution === "merge") {
-                const mergeAttempt = await this.tryAutoMergeConflict(currentPath, plainData);
-                if (mergeAttempt === null) {
-                  needsBackupAndOverwrite = true;
-                } else if (!mergeAttempt.hasConflictMarkers) {
-                  // Clean merge -- local's and remote's edits didn't touch the same lines. If the
-                  // result is actually identical to what the server just sent (the common case for
-                  // a config-dir file like community-plugins.json when this device made no local
-                  // edits since its last sync), there is no real merge to speak of -- treat it as an
-                  // ordinary "adopt remote" download instead of a synthetic local edit. Doing the
-                  // latter unconditionally used to rely on this write being picked up by the
-                  // debounced auto-sync machinery and re-uploaded so lastSyncedHashStore would catch
-                  // up; whenever that indirect re-upload didn't happen promptly, the next sync's
-                  // Delta would still see this path as unresolved and re-offer it for merge, so the
-                  // exact same "Auto-merged" notice kept firing every sync even though nothing had
-                  // actually changed on either side.
-                  const remoteText = new TextDecoder("utf-8").decode(plainData);
-                  if (mergeAttempt.mergedText === remoteText) {
-                    // Falls through to the ordinary "adopt remote" write below (needsBackupAndOverwrite
-                    // is already false here) -- no local content is being discarded, so no backup and
-                    // no synthetic-edit notice.
-                  } else {
-                    const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
-                    // Deliberately NOT writeSelfPath: this write should look like a fresh local edit
-                    // so the existing debounced-sync machinery (main.ts) picks it up and re-uploads
-                    // the merged result through the ordinary upload path on the next pass -- no
-                    // special immediate-reupload plumbing needed, since this write's mtime will be
-                    // newer than the server's stored version and Delta will naturally resolve it to
-                    // need_upload next time.
-                    await writeBinaryByPath(this.vault, currentPath, mergedData);
-                    new Notice(t("plugins.sync.msg-auto-merged", "Auto-merged {{filename}} — both changes kept", { filename: pathUtil.basename(currentPath) }));
-                    const mergedFile = this.vault.getAbstractFileByPath(currentPath);
-                    if (this.hashCache && mergedFile instanceof TFile) {
-                      this.hashCache.set(mergedFile, await sha256(mergedData));
-                    }
-                    handledByMerge = true;
-                  }
-                } else {
-                  // Some region really was edited on both sides -- everything else already merged
-                  // automatically; only that region is left, marked inline (git-style) for the user
-                  // to resolve by hand. Back up the pre-merge local content first, same safety net
-                  // as "manual", then write the merged-with-markers file itself via writeSelfPath so
-                  // it doesn't immediately re-upload with unresolved markers still in it -- the
-                  // user's own next edit (removing the markers) is what should trigger the next sync.
-                  try {
-                    await this.backupLocalVersion(currentPath);
-                  } catch (backupErr) {
-                    console.error(`Failed to create pre-merge backup for ${currentPath}:`, backupErr);
-                  }
-                  const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
-                  await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, mergedData));
-                  new Notice(t("plugins.sync.msg-merge-conflict-markers", "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save", { filename: pathUtil.basename(currentPath) }));
-                  const mergedFile = this.vault.getAbstractFileByPath(currentPath);
-                  if (this.hashCache && mergedFile instanceof TFile) {
-                    this.hashCache.set(mergedFile, await sha256(mergedData));
-                  }
-                  handledByMerge = true;
-                }
-              }
-
-              if (needsBackupAndOverwrite) {
-                try {
-                  const conflictPath = await this.backupLocalVersion(currentPath);
-                  new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
-                } catch (backupErr) {
-                  console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
-                }
-              }
-            }
-
-            if (!handledByMerge) {
-              // mtime is set here, atomically, via Obsidian's own write options -- works the same
-              // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
-              await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, plainData, currentMtime));
-
-              // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
-              // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
-              if (this.hashCache) {
-                const written = this.vault.getAbstractFileByPath(currentPath);
-                if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
-              }
-
-              // Only recorded as "confirmed in sync with server" when the server's own content was
-              // taken as-is -- a merge produces content the server doesn't have yet, so that path
-              // must not be marked synced until the merged result is actually uploaded. Keyed on
-              // calculatedHash (the wire/ciphertext hash under E2EE, same as plain hash otherwise)
-              // to match the hash space Delta/history use server-side -- NOT plainHashForCache,
-              // which is deliberately the plaintext hash instead (see its own comment above).
-              this.lastSyncedHashStore?.set(currentPath, calculatedHash);
-            }
-
-            downloadedCount++;
-
-            if (this.deletedFiles[currentPath]) {
-              delete this.deletedFiles[currentPath];
-            }
-          } catch (e: unknown) {
-            console.error(`Failed to save downloaded file ${eofPath}:`, e);
-            failedPaths.push(eofPath);
+            await this.backupLocalVersion(currentPath);
+          } catch (backupErr) {
+            console.error(`Failed to create pre-merge backup for ${currentPath}:`, backupErr);
+          }
+          const mergedData = new TextEncoder().encode(mergeAttempt.mergedText).buffer;
+          await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, mergedData));
+          new Notice(t("plugins.sync.msg-merge-conflict-markers", "Merge conflict in {{filename}} — resolve the <<<<<<< markers and save", { filename: pathUtil.basename(currentPath) }));
+          const mergedFile = this.vault.getAbstractFileByPath(currentPath);
+          if (this.hashCache && mergedFile instanceof TFile) {
+            this.hashCache.set(mergedFile, await sha256(mergedData));
+          }
+          handledByMerge = true;
+        } else if (this.settings.conflictResolution === "client-wins") {
+          // No merge was attempted (non-text, or a text file with nothing to merge against) --
+          // the local file wins and is left untouched, but the losing remote edit is a real
+          // change made on another device: back it up as a conflict copy instead of silently
+          // discarding it, the same safety net server-wins gets below.
+          try {
+            const conflictPath = await this.backupRemoteVersion(currentPath, plainData);
+            new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
+          } catch (backupErr) {
+            console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
+          }
+          // Deliberately not a failure -- retrying would only hit this same skip forever.
+          return true;
+        } else {
+          // "server-wins" (also the fallback for a text file merge couldn't be attempted for):
+          // back up local, then fall through to the ordinary adopt-remote write below.
+          try {
+            const conflictPath = await this.backupLocalVersion(currentPath);
+            new Notice(t("plugins.sync.msg-conflict-backup-created", "Conflict backup created: {{filename}}", { filename: pathUtil.basename(conflictPath) }));
+          } catch (backupErr) {
+            console.error(`Failed to create conflict backup for ${currentPath}:`, backupErr);
           }
         }
-        } catch (e: unknown) {
-          console.error("Failed to process downloaded chunk:", e);
+      }
+
+      if (!handledByMerge) {
+        // mtime is set here, atomically, via Obsidian's own write options -- works the same
+        // way on desktop and mobile, and TFile.stat reflects it immediately afterward.
+        await this.writeSelfPath(currentPath, () => writeBinaryByPath(this.vault, currentPath, plainData, currentMtime));
+
+        // Seeds the same cache Publish's diff scan reads from, so a file that just arrived via
+        // regular sync doesn't get re-read and re-hashed the next time Publish checks it.
+        if (this.hashCache) {
+          const written = this.vault.getAbstractFileByPath(currentPath);
+          if (written instanceof TFile) this.hashCache.set(written, plainHashForCache);
         }
-        })();
-      });
 
-      downloadStream.on("end", () => resolve());
-      downloadStream.on("error", (err) => reject(err instanceof Error ? err : new Error(String(err))));
+        // Only recorded as "confirmed in sync with server" when the server's own content was
+        // taken as-is -- a merge produces content the server doesn't have yet, so that path
+        // must not be marked synced until the merged result is actually uploaded. Keyed on
+        // calculatedHash (the wire/ciphertext hash under E2EE, same as plain hash otherwise)
+        // to match the hash space Delta/history use server-side -- NOT plainHashForCache,
+        // which is deliberately the plaintext hash instead (see its own comment above).
+        this.lastSyncedHashStore?.set(currentPath, calculatedHash);
+      }
+
+      if (this.deletedFiles[currentPath]) {
+        delete this.deletedFiles[currentPath];
+      }
+
+      return true;
     });
+  }
 
-    return { downloadedCount, failedPaths };
+  // Extracted from internalSync's 3-2 step (see runDownloads's own comment for why deletions and
+  // downloads are handled separately) so the same logic can also run for a single pushed
+  // deletion (see applyPushedFileChange) without a full Delta round trip. Returns whether a
+  // local delete actually happened (internalSync's deleteCount only increments on that, not on
+  // a not-found no-op) -- the deletedFiles tombstone is cleared regardless, same as before this
+  // was extracted.
+  private async applyServerDeletion(metaPath: string): Promise<boolean> {
+    let deleted = false;
+    try {
+      const file = this.vault.getAbstractFileByPath(metaPath);
+      if (file) {
+        await this.writeSelfPath(metaPath, () => this.fileManager.trashFile(file));
+        deleted = true;
+      } else if (await this.vault.adapter.exists(metaPath)) {
+        // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
+        // is the only option.
+        await this.writeSelfPath(metaPath, () => this.vault.adapter.remove(metaPath));
+        deleted = true;
+      }
+    } catch (e: unknown) {
+      console.error(`Failed to delete local file ${metaPath}:`, e);
+    }
+    if (this.deletedFiles[metaPath]) {
+      delete this.deletedFiles[metaPath];
+    }
+    return deleted;
+  }
+
+  // 2026-08 push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
+  // llm-wiki/03-*.md) -- applies exactly the one file a `push` notification named, instead of
+  // running a full internalSync()/Delta for every remote change regardless of how much actually
+  // changed. Safe to call concurrently with nothing else touching this SyncClient instance (the
+  // caller, main.ts, is responsible for not overlapping this with a full sync() call on shared
+  // mutable state like deletedFiles/hashCache -- see main.ts's isSyncing guard).
+  public async applyPushedFileChange(file: RemoteFileMetaWire): Promise<void> {
+    if (file.is_deleted) {
+      await this.applyServerDeletion(file.path);
+      return;
+    }
+    await this.downloadFileBatch([file.path], this.vault.getName(), { done: 0, total: 1 });
   }
 
   private async internalSync(): Promise<SyncResult> {
-    const metadata = getMetadata(this.token, this.settings);
     const vaultId = this.vault.getName();
 
     // 1. Scan local file metadata. Reading and hashing every file one at a time (as this used to
@@ -1222,33 +1054,18 @@ export class SyncClient {
     }
 
     // 2. Send the delta comparison request
-    const deltaReq = new pb.DeltaRequest();
-    deltaReq.setVaultId(vaultId);
-
-    const localFilesList: pb.FileMeta[] = [];
-    for (const f of localFilesMeta) {
-      const meta = new pb.FileMeta();
-      meta.setPath(f.path);
-      meta.setModifiedAtMs(f.modified_at_ms);
-      meta.setSizeBytes(f.size_bytes);
-      meta.setContentHash(f.content_hash);
-      meta.setIsDeleted(f.is_deleted);
-      localFilesList.push(meta);
-    }
-    deltaReq.setLocalFilesList(localFilesList);
-
-    const deltaRes = await this.client.delta(deltaReq, metadata);
+    const deltaRes = await this.transport.delta(vaultId, localFilesMeta);
 
     let uploadCount = 0;
     let downloadCount = 0;
     let deleteCount = 0;
 
-    const needUploadList = deltaRes.getNeedUploadList();
-    const needDownloadList = deltaRes.getNeedDownloadList();
+    const needUploadList = deltaRes.needUpload;
+    const needDownloadList = deltaRes.needDownload;
 
     // 3-1. Reconcile locally-deleted files against the server response and clean up local state
     const sentDeletions = Object.keys(this.deletedFiles);
-    const downloadPaths = new Set(needDownloadList.map((f) => f.getPath()));
+    const downloadPaths = new Set(needDownloadList.map((f) => f.path));
     for (const delPath of sentDeletions) {
       if (!downloadPaths.has(delPath)) {
         delete this.deletedFiles[delPath];
@@ -1257,26 +1074,9 @@ export class SyncClient {
     }
 
     // 3-2. Apply server-side deletions locally (downloading tombstones)
-    const filesToDelete = needDownloadList.filter((f) => f.getIsDeleted());
+    const filesToDelete = needDownloadList.filter((f) => f.is_deleted);
     for (const fileMeta of filesToDelete) {
-      const metaPath = fileMeta.getPath();
-      try {
-        const file = this.vault.getAbstractFileByPath(metaPath);
-        if (file) {
-          await this.writeSelfPath(metaPath, () => this.fileManager.trashFile(file));
-          deleteCount++;
-        } else if (await this.vault.adapter.exists(metaPath)) {
-          // A file outside the vault index (.obsidian/* etc.) — deleting directly via the Adapter
-          // is the only option.
-          await this.writeSelfPath(metaPath, () => this.vault.adapter.remove(metaPath));
-          deleteCount++;
-        }
-      } catch (e: unknown) {
-        console.error(`Failed to delete local file ${metaPath}:`, e);
-      }
-      if (this.deletedFiles[metaPath]) {
-        delete this.deletedFiles[metaPath];
-      }
+      if (await this.applyServerDeletion(fileMeta.path)) deleteCount++;
     }
 
     // 4 & 5. UploadFiles and DownloadFiles run concurrently, not sequentially -- a path is only
@@ -1289,8 +1089,8 @@ export class SyncClient {
     // a whole separate manual sync (a fresh Delta) to pick it back up).
     const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
     const hashByPath = new Map(localFilesMeta.map((f) => [f.path, f.content_hash]));
-    const filesToDownload = needDownloadList.filter((f) => !f.getIsDeleted());
-    const downloadSizeByPath = new Map(filesToDownload.map((f) => [f.getPath(), f.getSizeBytes()]));
+    const filesToDownload = needDownloadList.filter((f) => !f.is_deleted);
+    const downloadSizeByPath = new Map(filesToDownload.map((f) => [f.path, f.size_bytes]));
 
     const runUploads = async (): Promise<string[]> => {
       const UPLOAD_RETRY_ATTEMPTS = 2;
@@ -1304,9 +1104,9 @@ export class SyncClient {
         }
         let uploadAcksProcessed = 0;
         const failedThisAttempt: string[] = [];
-        const onUploadAck = (ack: pb.UploadAck): void => {
-          const ackPath = ack.getPath();
-          if (ack.getOk()) {
+        const onUploadAck = (ack: { path: string; ok: boolean; error: string }): void => {
+          const ackPath = ack.path;
+          if (ack.ok) {
             uploadCount++;
             if (this.deletedFiles[ackPath]) {
               delete this.deletedFiles[ackPath];
@@ -1316,7 +1116,7 @@ export class SyncClient {
             const uploadedHash = hashByPath.get(ackPath);
             if (uploadedHash) this.lastSyncedHashStore?.set(ackPath, uploadedHash);
           } else {
-            console.error(`Upload failed for ${ackPath}: ${ack.getError()}`);
+            console.error(`Upload failed for ${ackPath}: ${ack.error}`);
             failedThisAttempt.push(ackPath);
           }
           if (attempt === 0) this.reportProgress("upload", ++uploadAcksProcessed, pathsToUpload.length);
@@ -1350,7 +1150,7 @@ export class SyncClient {
       // set, which previously failed identically on every retry with no way to make progress.
       const DOWNLOAD_BATCH_TARGET_BYTES = 20 * 1024 * 1024;
       const MAX_FILES_PER_DOWNLOAD_BATCH = 500;
-      const pathsToDownload = filesToDownload.map((f) => f.getPath());
+      const pathsToDownload = filesToDownload.map((f) => f.path);
       const progressState = { done: 0, total: pathsToDownload.length };
 
       const { downloadedCount, failedPaths } = await runBatchedDownloads(
@@ -1401,16 +1201,30 @@ export class SyncClient {
       deleted: deleteCount,
       failed: failedUploadPaths.length + failedDownloadPaths.length,
       updatedPluginIds: derivePluginIdsFromPaths(
-        needDownloadList.map((f) => f.getPath()),
+        needDownloadList.map((f) => f.path),
         this.vault.configDir
       ),
     };
   }
 
   public async testConnection(): Promise<void> {
-    const metadata = getMetadata(this.token, this.settings);
-    const request = new pb.Empty();
-    await this.client.ping(request, metadata);
+    await this.transport.ping();
+  }
+
+  // 2026-08 Obsidian core Sync WS fidelity follow-up (see
+  // #11_websocket_동기화_프로토콜_설계.md's re-analysis) -- size/purge/usernames. No REST
+  // equivalent exists for these (unlike history/restore above), so they go through the WS
+  // transport directly rather than requestHttp().
+  public async getVaultSize(): Promise<VaultSize> {
+    return this.transport.size(this.vault.getName());
+  }
+
+  public async purgeVault(): Promise<PurgeResult> {
+    return this.transport.purge(this.vault.getName());
+  }
+
+  public async getUsernames(): Promise<string[]> {
+    return this.transport.getUsernames(this.vault.getName());
   }
 
   // fetch()-shaped wrapper around Obsidian's requestUrl -- required instead of fetch() for CORS-free
@@ -1451,106 +1265,49 @@ export class SyncClient {
     };
   }
 
-  // Helper for making HTTP REST API calls
-  private async requestHttp<T = unknown>(method: string, apiPath: string, body?: unknown, isBinary?: false): Promise<T>;
-  private async requestHttp(method: string, apiPath: string, body: unknown, isBinary: true): Promise<ArrayBuffer>;
-  private async requestHttp(method: string, apiPath: string, body?: unknown, isBinary = false): Promise<unknown> {
-    const protocol = this.settings.useTls ? "https" : "http";
-    const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}${apiPath}`;
-
-    const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
-      "X-Device-Name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
-      "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
-    };
-
-    const options: { method: string; headers: Record<string, string>; body?: string } = {
-      method: method,
-      headers: headers
-    };
-
-    if (body) {
-      options.body = JSON.stringify(body);
-      headers["Content-Type"] = "application/json";
-    }
-
-    const response = await this.httpFetch(url, options);
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`HTTP Request failed: ${response.status} ${response.statusText}\n${errText}`);
-    }
-
-    if (isBinary) {
-      return response.arrayBuffer();
-    }
-
-    return response.json();
-  }
-
-  // Fetch the backup version history for a given file (via the HTTP REST API)
+  // Fetch the backup version history for a given file. 2026-08 WS history migration follow-up
+  // (see #11_websocket_동기화_프로토콜_설계.md and llm-wiki/09-*.md) -- moved off REST
+  // (requestHttp) onto the transport, since the server-side REST views this used to hit have
+  // been removed in favor of the WS ops that already existed alongside them.
   public async getFileHistory(filePath: string): Promise<HistoryVersionEntry[]> {
     const vaultId = this.vault.getName();
-    const encodedPath = encodeURIComponent(filePath);
-    const path = `/api/history?vault_id=${encodeURIComponent(vaultId)}&path=${encodedPath}`;
-
-    const res = await this.requestHttp<{ versions?: HistoryVersionEntry[] }>("GET", path);
-    return res.versions || [];
+    return this.transport.getHistory(vaultId, filePath);
   }
 
-  // Download the binary content of a specific backup version ID (via the HTTP REST API)
+  // Download the binary content of a specific backup version ID.
   public async downloadHistoryVersion(filePath: string, historyId: number): Promise<ArrayBuffer> {
     const vaultId = this.vault.getName();
-    const path = `/api/history/download?vault_id=${encodeURIComponent(vaultId)}&history_id=${historyId}`;
-
-    const arrayBuffer = await this.requestHttp("GET", path, null, true);
+    const { data } = await this.transport.downloadHistoryVersion(vaultId, historyId);
 
     // History is stored server-side exactly as it was uploaded -- ciphertext when E2EE is on,
     // same as regular sync's UploadFiles/DownloadFiles. Every caller of this (version preview,
     // diff, copy) expects plaintext back, same as the regular download path already decrypts.
     if (this.settings.enableE2EE && this.settings.e2eePassword) {
       const key = await this.getE2eeKey();
-      return this.decryptData(arrayBuffer, key);
+      return this.decryptData(data, key);
     }
-    return arrayBuffer;
+    return data;
   }
 
   // Download a specific backup version's data, restore it to the original path, and also ask the
-  // server to record the restore so both sides stay in sync (via the HTTP REST API)
+  // server to record the restore so both sides stay in sync.
   public async restoreHistoryVersion(historyId: number, targetPath?: string): Promise<string> {
     const vaultId = this.vault.getName();
 
-    // 1. Send the restore request to the server (updates server-side DB metadata and immediately
-    // records the restore in history)
-    const restoreReqBody = {
-      vault_id: vaultId,
-      path: targetPath || "",
-      history_id: historyId
-    };
-    await this.requestHttp("POST", "/api/history/restore", restoreReqBody);
+    // 1. Tell the server to restore (updates its own vault copy + DB metadata + records the
+    // restore in history -- and now fires a change_notifier push, unlike the old REST view).
+    await this.transport.restoreHistoryVersion(vaultId, historyId, targetPath || "");
 
-    // 2. Receive the HTTP download response directly and extract the data
-    const protocol = this.settings.useTls ? "https" : "http";
-    const downloadUrl = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/history/download?vault_id=${encodeURIComponent(vaultId)}&history_id=${historyId}`;
-
-    const headers: Record<string, string> = {
-      "Authorization": `Bearer ${this.token}`,
-      "X-Device-Name": encodeURIComponent(this.settings.deviceName || "Unknown Device"),
-      "X-User-Name": encodeURIComponent(this.settings.userName || "Unknown User")
-    };
-
-    const response = await this.httpFetch(downloadUrl, { method: "GET", headers });
-    if (!response.ok) {
-      throw new Error(`HTTP Download failed: ${response.status} ${response.statusText}`);
-    }
-
-    // Read the X-File-Path header to determine which path to restore to
-    const currentPath = targetPath || decodeURIComponent(response.headers.get("X-File-Path") || "");
+    // 2. Fetch the version's actual bytes ourselves too, for an immediate local write rather
+    // than waiting on that push round trip -- `path` is the server-resolved path (mirrors the
+    // old REST download response's X-File-Path header) for when no targetPath was given.
+    const { data, path: resolvedPath } = await this.transport.downloadHistoryVersion(vaultId, historyId, targetPath || "");
+    const currentPath = targetPath || resolvedPath;
     if (!currentPath) {
-      throw new Error("Failed to determine restore file path from server response header.");
+      throw new Error("Failed to determine restore file path from server response.");
     }
 
-    let arrayBuffer = await response.arrayBuffer();
-
+    let arrayBuffer = data;
     // Same as downloadHistoryVersion: the backup is stored as ciphertext when E2EE is on, and
     // has to be decrypted before it's written back into the vault -- otherwise "restore" replaces
     // the note's actual content with raw ciphertext.
@@ -1605,8 +1362,8 @@ export class SyncClient {
 
   /** Returns the hash it computed for the upload, so callers can seed a local hash cache with it
    *  for free — it's already unavoidable work, computed regardless of any caching layer. */
-  public async publishFile(filePath: string): Promise<string> {
-    const siteId = this.vault.getName();
+  public async publishFile(filePath: string, meta?: PublishFileMeta, remoteSite?: RemoteSite): Promise<string> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const data = await readBinaryByPath(this.vault, filePath);
     // Same per-file upload size limit as core Publish (reverse-engineered from obsidian.asar:
     // 52428800 = rejected with a "TOOLARGE" error above 50MB).
@@ -1623,6 +1380,12 @@ export class SyncClient {
         "obs-id": siteId,
         "obs-path": encodeURIComponent(filePath),
         "obs-hash": hash,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
+        ...(meta?.permalink ? { "obs-permalink": encodeURIComponent(meta.permalink) } : {}),
+        ...(meta?.description ? { "obs-description": encodeURIComponent(meta.description) } : {}),
+        ...(meta?.image ? { "obs-image": encodeURIComponent(meta.image) } : {}),
+        ...(meta?.aliases && meta.aliases.length > 0
+          ? { "obs-aliases": encodeURIComponent(JSON.stringify(meta.aliases)) } : {}),
       },
       body: data,
     });
@@ -1633,13 +1396,16 @@ export class SyncClient {
     return hash;
   }
 
-  public async unpublishFile(filePath: string): Promise<void> {
-    const siteId = this.vault.getName();
+  public async unpublishFile(filePath: string, remoteSite?: RemoteSite): Promise<void> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const url = `${this.getPublishHost()}/api/remove`;
     const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: filePath, id: siteId, token: this.token }),
+      body: JSON.stringify({
+        path: filePath, id: siteId, token: this.token,
+        ...(remoteSite ? { owner: remoteSite.owner } : {}),
+      }),
     });
     if (!response.ok) {
       const errText = await response.text();
@@ -1647,8 +1413,8 @@ export class SyncClient {
     }
   }
 
-  public async getPublishedFiles(): Promise<string[]> {
-    const vaultId = this.vault.getName();
+  public async getPublishedFiles(remoteSite?: RemoteSite): Promise<string[]> {
+    const vaultId = remoteSite?.vaultId ?? this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
     const response = await this.httpFetch(url, {
@@ -1656,6 +1422,7 @@ export class SyncClient {
       headers: {
         "Authorization": `Bearer ${this.token}`,
         "obs-id": vaultId,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
       },
     });
     if (!response.ok) return [];
@@ -1664,8 +1431,8 @@ export class SyncClient {
   }
 
   /** Returns the full /api/list response (path + hash included). Used by PublishModal. */
-  public async listFiles(): Promise<Array<{ path: string; hash: string }>> {
-    const vaultId = this.vault.getName();
+  public async listFiles(remoteSite?: RemoteSite): Promise<Array<{ path: string; hash: string }>> {
+    const vaultId = remoteSite?.vaultId ?? this.vault.getName();
     const protocol = this.settings.useTls ? "https" : "http";
     const url = `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/api/list`;
     const response = await this.httpFetch(url, {
@@ -1673,6 +1440,7 @@ export class SyncClient {
       headers: {
         "Authorization": `Bearer ${this.token}`,
         "obs-id": vaultId,
+        ...(remoteSite ? { "obs-owner": remoteSite.owner } : {}),
       },
     });
     if (!response.ok) return [];
@@ -1712,13 +1480,16 @@ export class SyncClient {
   }
 
   // Download: POST /api/download with {id, token, path} → binary
-  public async downloadPublishedFile(filePath: string): Promise<ArrayBuffer> {
-    const siteId = this.vault.getName();
+  public async downloadPublishedFile(filePath: string, remoteSite?: RemoteSite): Promise<ArrayBuffer> {
+    const siteId = remoteSite?.vaultId ?? this.vault.getName();
     const url = `${this.getPublishHost()}/api/download`;
     const response = await this.httpFetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: siteId, token: this.token, path: filePath }),
+      body: JSON.stringify({
+        id: siteId, token: this.token, path: filePath,
+        ...(remoteSite ? { owner: remoteSite.owner } : {}),
+      }),
     });
     if (!response.ok) {
       const errText = await response.text();
@@ -1741,6 +1512,34 @@ export class SyncClient {
   // Password: DEL
   public async deletePassword(name: string): Promise<void> {
     await this.postToBackend("api/password", { del: name });
+  }
+
+  // Site options: first batch of real Obsidian's "Change site options" dialog (see
+  // 25_사이트_옵션_1차_구현.md). GET (empty body) and SET (partial patch) share one endpoint,
+  // matching the server's own get-current-or-merge-and-return-current convention.
+  public async getSiteOptions(): Promise<PublishSiteOptions> {
+    const res = await this.postToBackend<{ options: PublishSiteOptions }>("api/options", {});
+    return res.options;
+  }
+
+  public async setSiteOptions(options: Partial<PublishSiteOptions>): Promise<PublishSiteOptions> {
+    const res = await this.postToBackend<{ options: PublishSiteOptions }>("api/options", { options });
+    return res.options;
+  }
+
+  // Custom domain (see 26_커스텀_도메인_지원.md) -- unblocks publish.js/googleAnalytics, which
+  // real Obsidian only activates once a custom domain is configured. Matches real Obsidian's own
+  // apiCustomUrl(url, redirect): POST /api/customurl {token, id, host, url, redirect}, GET (no
+  // url) / SET (with url) sharing one endpoint, same convention as site options above. `host` is
+  // this client's own server instance host:port -- same as setSlug, received by the server but
+  // not stored/used.
+  public async getCustomDomain(): Promise<CustomDomainConfig> {
+    return this.postToBackend<CustomDomainConfig>("api/customurl", {});
+  }
+
+  public async setCustomDomain(url: string, redirect: boolean): Promise<CustomDomainConfig> {
+    const host = `${this.settings.serverHost}:${this.settings.serverPort}`;
+    return this.postToBackend<CustomDomainConfig>("api/customurl", { host, url, redirect });
   }
 
   // Slug: GET slugs map
@@ -1821,5 +1620,95 @@ export class SyncClient {
       const errText = await response.text();
       throw new Error(`share/accept failed: ${response.status}\n${errText}`);
     }
+  }
+
+  // Share: MINE -- Publish sites this account has been added as an accepted collaborator on
+  // (across every owner, not just this vault's own). GET+Bearer+silent-[]-on-failure, same
+  // convention as listSharedWithMe() below (a list endpoint), not the POST convention the other
+  // Share: * methods above use.
+  public async getMyShares(): Promise<Array<RemoteSite & { siteName: string }>> {
+    const url = `${this.getPublishHost()}/publish/share/mine`;
+    const response = await this.httpFetch(url, {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${this.token}` },
+    });
+    if (!response.ok) return [];
+    const res = (await response.json()) as { sites?: { owner: string; vault_id: string; site_name: string }[] };
+    return (res.sites || []).map((s) => ({ owner: s.owner, vaultId: s.vault_id, siteName: s.site_name }));
+  }
+
+  // ─── Vault sync sharing (see 14_vault_sharing_설계.md) ────────────────────────────────────
+  // Distinct from Share: LIST/INVITE/REMOVE/ACCEPT above, which grant access to a *published
+  // site*, not to the vault's own sync data. Owner-only (invite/list/remove) vs.
+  // self-acting (leave/sharedWithMe) mirrors web.py's VaultContext-scoped vs. plain-authenticated
+  // route split.
+
+  public async inviteVaultShare(email: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/invite`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName(), email }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/invite failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  public async listVaultShares(): Promise<{ uid: string; email: string; accepted: boolean; createdAtMs: number }[]> {
+    const url = `${this.getPublishHost()}/api/vault/share/list`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName() }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/list failed: ${response.status}\n${errText}`);
+    }
+    const res = (await response.json()) as { shares?: { uid: string; email: string; accepted: boolean; createdAtMs: number }[] };
+    return res.shares || [];
+  }
+
+  public async removeVaultShare(shareUid: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/remove`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, vault_id: this.vault.getName(), share_uid: shareUid }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/remove failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  // The caller here (not the vault's owner -- this is what makes it different from
+  // removeVaultShare above) is leaving a vault shared TO them, identified by the owner's own
+  // account name plus this local folder's name (still the vault_id convention, see
+  // settings.ts's sharedVaultOwner).
+  public async leaveSharedVault(ownerUsername: string): Promise<void> {
+    const url = `${this.getPublishHost()}/api/vault/share/leave`;
+    const response = await this.httpFetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: this.token, ownerUsername, vaultId: this.vault.getName() }),
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`vault/share/leave failed: ${response.status}\n${errText}`);
+    }
+  }
+
+  public async listSharedWithMe(): Promise<{ ownerUsername: string; vaultId: string; accepted: boolean; createdAtMs: number }[]> {
+    const url = `${this.getPublishHost()}/api/vault/shared-with-me`;
+    const response = await this.httpFetch(url, {
+      method: "GET",
+      headers: { "Authorization": `Bearer ${this.token}` },
+    });
+    if (!response.ok) return [];
+    const res = (await response.json()) as { vaults?: { ownerUsername: string; vaultId: string; accepted: boolean; createdAtMs: number }[] };
+    return res.vaults || [];
   }
 }

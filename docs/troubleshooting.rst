@@ -29,11 +29,36 @@ completes.
 2. Confirm the device running Obsidian can reach that host/port at all —
    same network, VPN connected, firewall not blocking it.
 3. If **Use TLS** is on, make sure the server is actually reachable over
-   HTTPS at that address (a plain-HTTP server with TLS toggled on in
+   HTTPS/WSS at that address (a plain-HTTP server with TLS toggled on in
    settings will fail the handshake).
 4. Confirm you're logged in (**Settings → Pumice → Authentication** should
    show a **Delete** button, not **Log in**) — an expired or deleted token
    fails the same way as a network problem.
+5. If you're behind a corporate proxy or a restrictive firewall, confirm it
+   actually allows WebSocket connections (an HTTP ``Upgrade`` handshake) to
+   that host/port — some proxies pass plain HTTP through fine but block or
+   silently strip the upgrade, which looks identical to the server being
+   unreachable.
+
+Sync connection keeps reconnecting, or changes take a while to show up
+------------------------------------------------------------------------------
+
+**Symptom:** The **Connection status** line (**Settings → Pumice**) cycles
+between connected/reconnecting, or another device's changes take noticeably
+longer than a few seconds to arrive.
+
+**Cause:** The persistent sync connection (see :doc:`architecture`) dropped
+and is reconnecting with backoff — usually a flaky network, a server
+restart, or a proxy/load balancer timing out an idle connection sooner than
+Pumice's own heartbeat expects.
+
+**Fix:** Open the **Diagnostics log** (**Settings → Pumice → Run sync**, or
+the **Open sync diagnostics log** command) — it shows the actual
+connect/reconnect/retry sequence, which is the fastest way to tell a
+transient blip from something worth investigating further (misconfigured
+proxy timeout, server actually down, etc.). Even while reconnecting, nothing
+is lost: once the connection re-establishes, Pumice catches up on exactly
+what it missed rather than needing a full rescan.
 
 A vault syncs, but two devices never see each other's changes
 -------------------------------------------------------------------
@@ -69,16 +94,19 @@ again.
 A large publish/sync feels slower on one device than another
 -------------------------------------------------------------------
 
-**Cause:** Likely the streaming-upload fast path (see :doc:`architecture`)
-isn't available on that specific device — either the server isn't
-configured for TLS, or the device's browser engine doesn't support
-streaming request bodies yet (notably, Obsidian's iOS app only gained this
-with iOS/iPadOS 26.4). This isn't a failure: uploads still complete
-correctly over the batched fallback path, just less efficiently for very
-large vaults.
+**Cause:** Large downloads are split into batches (bounded by both byte
+size and file count, see :doc:`architecture`) and each batch retries
+independently on failure — a device on a slower or less reliable
+connection will naturally take longer to work through the same batch list,
+especially if some batches need a retry. This isn't a failure: nothing is
+lost or corrupted, it just takes longer proportional to how many retries
+were needed.
 
-**Fix (optional):** Put pumice-server behind TLS if it isn't already, and/or
-update the device's OS, if you want the faster path there too.
+**Fix:** Usually nothing to do — it self-corrects as batches complete. If
+one device is consistently far slower than the others, check its own
+network path to the server first (same troubleshooting as **"Test
+connection" fails**, above) rather than assuming something's
+misconfigured on the server.
 
 Still stuck?
 ---------------

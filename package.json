@@ -1,7 +1,7 @@
 {
   "name": "pumice",
-  "version": "0.0.34",
-  "description": "Sync, version, and publish your vault over your own self-hosted gRPC server.",
+  "version": "0.0.35",
+  "description": "Sync, version, and publish your vault over your own self-hosted server.",
   "main": "main.js",
   "author": "Ji-ho Lee <search5@gmail.com>",
   "repository": {
@@ -9,34 +9,25 @@
     "url": "git+https://github.com/search5/pumice.git"
   },
   "scripts": {
-    "postinstall": "node scripts/fetch-protoc-gen-grpc-web.mjs",
-    "predev": "node scripts/ensure-generated.mjs",
     "dev": "node esbuild.config.mjs",
-    "prebuild": "node scripts/ensure-generated.mjs",
     "build": "node esbuild.config.mjs production",
-    "prelint": "node scripts/ensure-generated.mjs",
     "lint": "tsc --noEmit && eslint .",
     "test": "vitest run",
-    "proto:gen": "node scripts/gen-proto.mjs",
     "version": "node scripts/version-bump.mjs && git add manifest.json versions.json"
   },
   "dependencies": {
-    "@improbable-eng/grpc-web": "^0.15.0",
     "diff": "^9.0.0",
-    "google-protobuf": "^3.21.2",
-    "grpc-web": "^2.0.2",
     "node-diff3": "^3.2.1"
   },
   "devDependencies": {
-    "@types/google-protobuf": "^3.15.12",
     "@types/node": "^20.0.0",
     "@typescript-eslint/parser": "^8.64.0",
+    "@vitest/coverage-v8": "^4.1.10",
     "esbuild": "^0.21.0",
     "eslint": "^9.39.5",
     "eslint-plugin-obsidianmd": "^0.4.1",
     "fake-indexeddb": "^6.2.5",
     "obsidian": "latest",
-    "protoc-gen-js": "^3.21.4-4",
     "typescript": "^5.0.0",
     "typescript-eslint": "^8.64.0",
     "vitest": "^4.1.10"

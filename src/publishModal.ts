@@ -1,11 +1,17 @@
-import { AbstractInputSuggest, App, Modal, Notice, Setting, TFile, TFolder, normalizePath, setIcon } from "obsidian";
+import { AbstractInputSuggest, App, DropdownComponent, Modal, Notice, Setting, TextComponent, TFile, TFolder, ToggleComponent, normalizePath, setIcon } from "obsidian";
 import SyncPlugin from "./main";
-import { SyncClient } from "./syncClient";
+import { SyncClient, type PublishSiteOptions, type RemoteSite } from "./syncClient";
 import { ContentHashCache } from "./contentHashCache";
 import { mapWithConcurrency } from "./concurrency";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { classifyExistingFile, DiffType, isNewFileEligible, scanSingleFile } from "./publishEligibility";
+import { deriveTopLevelNames, mergeOrdering, moveEntry, type SidebarEntry, toggleHidden, toSiteOptionsPatch } from "./navigationOrdering";
+import { buildRemoteSiteUrl, type SharedSite } from "./siteCollaboration";
+import {
+  classifyExistingFile, classifyNewFile, DiffType, isPublishSupportedFile, parseAliases,
+  parseDescription, parseImagePath, parsePermalink, parsePublishFlag, resolvePublishFlag,
+  scanSingleFile,
+} from "./publishEligibility";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -18,14 +24,43 @@ interface DiffItem {
 
 // ─── Utilities ─────────────────────────────────────────────────────────────
 
-function getPublishFlag(app: App, file: TFile): boolean | null {
+// Exported for main.ts's file-menu "Publish current file" registration and the modal's own
+// single-file branch below, so both consult the exact same folder-fallback logic -- a
+// divergence between two separately-reimplemented copies is exactly the shape of bug an
+// earlier commit (adb3397) had to fix once already.
+export function getPublishFlag(app: App, file: TFile, includeFolders: string[], excludeFolders: string[]): boolean | null {
   const cache = app.metadataCache.getFileCache(file);
-  // frontmatter values are arbitrary YAML, so FrontMatterCache types them `any` -- annotating
-  // `unknown` here instead keeps that from flowing further than this one comparison.
-  const publish: unknown = cache?.frontmatter?.publish;
-  if (publish === true  || publish === "true"  || publish === "yes") return true;
-  if (publish === false || publish === "false" || publish === "no")  return false;
-  return null;
+  const explicit = parsePublishFlag(cache?.frontmatter?.publish);
+  return resolvePublishFlag(explicit, isUnderFolder(file.path, excludeFolders), isUnderFolder(file.path, includeFolders));
+}
+
+// permalink has no folder fallback (it's a pure frontmatter override, unlike the publish flag),
+// so unlike getPublishFlag there's no include/exclude folder logic here.
+export function getPublishPermalink(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parsePermalink(cache?.frontmatter?.permalink);
+}
+
+export function getPublishDescription(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseDescription(cache?.frontmatter?.description);
+}
+
+// Deliberately doesn't also read `cover` -- real Obsidian treats it as an identical alias for
+// `image`, but this session scoped that alias out of pumice's first pass (see
+// 20_description_image_지원.md).
+export function getPublishImage(app: App, file: TFile): string | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseImagePath(cache?.frontmatter?.image);
+}
+
+// Used server-side to redirect visitors from a note's old/removed URL to wherever it lives now
+// -- see 22_aliases_리다이렉트_및_파비콘_자동감지.md. Real Obsidian requires the alias to be the
+// full vault-relative path of the old location (a bare filename won't redirect), but that's a
+// user-authoring requirement documented in Permalinks.md, not something this parser enforces.
+export function getPublishAliases(app: App, file: TFile): string[] | null {
+  const cache = app.metadataCache.getFileCache(file);
+  return parseAliases(cache?.frontmatter?.aliases);
 }
 
 async function computeHash(data: ArrayBuffer): Promise<string> {
@@ -42,18 +77,22 @@ function isUnderFolder(path: string, folders: string[]): boolean {
 const HASH_CONCURRENCY = 8;
 
 // ─── Delta computation ──────────────────────────────────────────────────────
-// Eligibility is driven purely by an explicit publish:true/false in each file's own
-// frontmatter (see classifyExistingFile/isNewFileEligible in publishEligibility.ts) --
-// "excluded folders" still take priority (a hard filter, unrelated to eligibility), but
-// "included folders" no longer grants eligibility to a file with no publish field at all.
+// Matches real Obsidian Publish's own scanForChanges exactly (see
+// 18_publish_게재_자격_실제_옵시디언과_동일화.md): a file is only ever dropped from
+// consideration by an explicit (or folder-fallback-resolved) publishFlag === false --
+// getPublishFlag() itself handles the exclude-then-include folder fallback now, so there's no
+// separate hard pre-filter here the way there used to be (that hard filter incorrectly skipped
+// an excluded-folder file even when its own frontmatter explicitly said publish: true, which
+// real Obsidian never does -- frontmatter always wins).
 async function scanForChanges(
   app: App,
   client: SyncClient,
+  includeFolders: string[],
   excludeFolders: string[],
   hashCache: ContentHashCache,
-  focusFile?: TFile
+  remoteSite?: RemoteSite
 ): Promise<DiffItem[]> {
-  const serverFiles = await client.listFiles();
+  const serverFiles = await client.listFiles(remoteSite);
   const serverMap = new Map<string, string>();
   for (const f of serverFiles) serverMap.set(f.path, f.hash);
 
@@ -68,55 +107,46 @@ async function scanForChanges(
     serverHash: string;
     localFile: TFile;
     publishFlag: boolean | null;
-    isFocused: boolean;
   }
   const candidates: Candidate[] = [];
 
   for (const [serverPath, serverHash] of serverMap) {
     processedPaths.add(serverPath);
-    if (isUnderFolder(serverPath, excludeFolders)) continue;
 
     const abstract = app.vault.getAbstractFileByPath(serverPath);
     const localFile = abstract instanceof TFile ? abstract : null;
 
-    if (!localFile) {
-      diffs.push({ path: serverPath, serverHash, type: "deleted", checked: true });
+    const publishFlag = localFile ? getPublishFlag(app, localFile, includeFolders, excludeFolders) : false;
+    if (!localFile || publishFlag === false) {
+      diffs.push({ path: serverPath, serverHash, type: "deleted", checked: false });
       continue;
     }
 
-    candidates.push({
-      path: serverPath,
-      serverHash,
-      localFile,
-      publishFlag: getPublishFlag(app, localFile),
-      isFocused: focusFile?.path === serverPath,
-    });
+    candidates.push({ path: serverPath, serverHash, localFile, publishFlag });
   }
 
-  const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem | null> => {
+  const candidateDiffs = await mapWithConcurrency(candidates, HASH_CONCURRENCY, async (c): Promise<DiffItem> => {
     const localHash = await hashCache.getHash(c.localFile, async () => {
       const data = await app.vault.readBinary(c.localFile);
       return computeHash(data);
     });
 
-    const type = classifyExistingFile({
+    const { type, checked } = classifyExistingFile({
       publishFlag: c.publishFlag,
       contentChanged: localHash !== c.serverHash,
-      isFocused: c.isFocused,
     });
-    return type ? { path: c.path, serverHash: c.serverHash, type, checked: type !== "unchanged" } : null;
+    return { path: c.path, serverHash: c.serverHash, type, checked };
   });
-  for (const d of candidateDiffs) if (d) diffs.push(d);
+  diffs.push(...candidateDiffs);
 
+  // isFileSupported-equivalent gate only applies to this "not yet on the server" pass -- a file
+  // already on the server already passed this check the first time it was uploaded.
   const allLocalFiles = app.vault.getFiles();
   for (const localFile of allLocalFiles) {
     if (processedPaths.has(localFile.path)) continue;
-    if (isUnderFolder(localFile.path, excludeFolders)) continue;
-    const isFocused = focusFile?.path === localFile.path;
-    const eligible = isNewFileEligible(getPublishFlag(app, localFile));
-    if (eligible || isFocused) {
-      diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: true });
-    }
+    if (!isPublishSupportedFile(localFile.extension, localFile.name)) continue;
+    const c = classifyNewFile(getPublishFlag(app, localFile, includeFolders, excludeFolders));
+    if (c) diffs.push({ path: localFile.path, serverHash: "", type: "new", checked: c.checked });
   }
 
   return diffs;
@@ -471,26 +501,28 @@ class ReviewChangesSection extends ModalSection {
       });
       const siteLink = infoEl.createEl("a", "publish-changes-current-site-name");
       siteLink.href = modal.siteUrl;
-      siteLink.setText(modal.app.vault.getName());
+      siteLink.setText(modal.remoteSite?.siteName ?? modal.app.vault.getName());
       siteLink.setAttribute("target", "_blank");
 
-      // Icon group (excluding "switch site")
-      infoEl.createDiv("publish-changes-switch-site", iconsEl => {
-        // "Site options" (Change site options) button — temporarily hidden since it isn't built yet.
-        // Uncomment once it's finished.
-        /*
-        iconsEl.createSpan("clickable-icon", el => {
-          setIcon(el, "lucide-settings");
-          el.setAttribute("aria-label", t("plugins.publish.tooltip-open-site-options", "Site options"));
-          el.addEventListener("click", () => modal.openSection(modal.siteOptionsSection));
+      // Icon group (excluding "switch site") -- Site options/Publish filters both target
+      // owner-only endpoints (real Obsidian's own Site collaboration permission table has no
+      // "Configure site options" for collaborators, see 36_실제_아키텍처_전환_
+      // Site_collaboration.md), so hidden entirely in collaborator mode rather than shown and
+      // erroring.
+      if (!modal.remoteSite) {
+        infoEl.createDiv("publish-changes-switch-site", iconsEl => {
+          iconsEl.createSpan("clickable-icon", el => {
+            setIcon(el, "lucide-settings");
+            el.setAttribute("aria-label", t("plugins.publish.tooltip-open-site-options", "Site options"));
+            el.addEventListener("click", () => modal.openSection(modal.siteOptionsSection));
+          });
+          iconsEl.createSpan("clickable-icon", el => {
+            setIcon(el, "lucide-filter");
+            el.setAttribute("aria-label", t("plugins.publish.tooltip-manage-publish-filters", "Publish filters"));
+            el.addEventListener("click", () => modal.openSection(modal.siteFiltersSection));
+          });
         });
-        */
-        iconsEl.createSpan("clickable-icon", el => {
-          setIcon(el, "lucide-filter");
-          el.setAttribute("aria-label", t("plugins.publish.tooltip-manage-publish-filters", "Publish filters"));
-          el.addEventListener("click", () => modal.openSection(modal.siteFiltersSection));
-        });
-      });
+      }
 
       // Search filter input
       const searchContainer = infoEl.createDiv("search-input-container");
@@ -610,6 +642,29 @@ class SiteOptionsSection extends ModalSection {
   private passwordListEl!: HTMLElement;
   private shareListEl!: HTMLElement;
 
+  // First batch of real Obsidian's "Change site options" dialog (~20 settings total, see
+  // 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md) -- the rest need real new site features
+  // (graph/search/outline/backlinks/sliding window/navigation sidebar/custom domain/
+  // collaboration), not just a stored value, so they're deferred (see 25_사이트_옵션_1차_구현.md).
+  private siteNameText!: TextComponent;
+  private indexFileText!: TextComponent;
+  private logoText!: TextComponent;
+  private noindexToggle!: ToggleComponent;
+  private hideTitleToggle!: ToggleComponent;
+  private readableLineLengthToggle!: ToggleComponent;
+  private strictLineBreaksToggle!: ToggleComponent;
+  private googleAnalyticsText!: TextComponent;
+  private showSearchToggle!: ToggleComponent;
+  private slidingWindowModeToggle!: ToggleComponent;
+  private showNavigationToggle!: ToggleComponent;
+  private defaultThemeDropdown!: DropdownComponent;
+  private showThemeToggleToggle!: ToggleComponent;
+  // Real Obsidian accumulates changed fields locally and only sends them on "Save site
+  // settings" (confirmed via obsidian.asar's Gee.show(), which builds a local `l={}` object
+  // from each field's onChange and posts it as one apiOptions(l) call) -- matched here rather
+  // than auto-saving per field.
+  private pendingOptionChanges: Partial<PublishSiteOptions> = {};
+
   constructor(modal: PublishModal) {
     super(modal);
 
@@ -637,6 +692,139 @@ class SiteOptionsSection extends ModalSection {
       const saveBtn = el.createEl("button", { cls: "mod-cta", text: t("dialogue.button-save", "Save") });
       saveBtn.addEventListener("click", () => void this.saveSlug());
     });
+
+    // Custom domain (see 26_커스텀_도메인_지원.md) -- separate modal rather than an inline
+    // field like the slug above, since it needs a domain string + a redirect toggle + setup
+    // guidance (matches real Obsidian's own separate "configureCustomDomainSection" sub-dialog).
+    const customDomainSetting = this.el.createDiv("setting-item");
+    customDomainSetting.createDiv("setting-item-info", el => {
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-custom-domain", "Custom domain") });
+      el.createDiv({ cls: "setting-item-description", text: t("plugins.publish.option-custom-domain-desc", "Use your own domain for this site.") });
+    });
+    customDomainSetting.createDiv("setting-item-control", el => {
+      const btn = el.createEl("button", { text: t("interface.button-manage", "Configure") });
+      btn.addEventListener("click", () => new CustomDomainModal(modal.app, modal.plugin).open());
+    });
+
+    // General (matches real Obsidian's "General" group in the Change site options dialog)
+    new Setting(this.el).setName(t("plugins.publish.label-site-general", "General")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-site-name", "Site name"))
+      .setDesc(t("plugins.publish.option-site-name-desc", "Shown in your site's header and browser tab title."))
+      .addText(text => {
+        this.siteNameText = text;
+        text.onChange(v => { this.pendingOptionChanges.siteName = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-home-page", "Home page"))
+      .setDesc(t("plugins.publish.option-home-page-desc", "The published note shown when visitors first arrive at your site."))
+      .addText(text => {
+        this.indexFileText = text;
+        text.onChange(v => { this.pendingOptionChanges.indexFile = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-logo", "Logo"))
+      .setDesc(t("plugins.publish.option-logo-desc", "A published image shown next to your site name."))
+      .addText(text => {
+        this.logoText = text;
+        text.onChange(v => { this.pendingOptionChanges.logo = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-noindex", "Hide from search engines"))
+      .setDesc(t("plugins.publish.option-noindex-desc", "Ask search engines not to index your site."))
+      .addToggle(toggle => {
+        this.noindexToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.noindex = v; });
+      });
+
+    // Appearance (matches real Obsidian's "Appearance" group -- see
+    // 33_실제_아키텍처_전환_테마_전환.md)
+    new Setting(this.el).setName(t("plugins.publish.label-site-appearance", "Appearance")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-default-theme", "Theme"))
+      .addDropdown(dropdown => {
+        this.defaultThemeDropdown = dropdown;
+        dropdown.addOption("light", t("plugins.publish.option-theme-light", "Light"));
+        dropdown.addOption("dark", t("plugins.publish.option-theme-dark", "Dark"));
+        dropdown.addOption("system", t("plugins.publish.option-theme-system", "Same as system"));
+        dropdown.onChange(v => { this.pendingOptionChanges.defaultTheme = v as "light" | "dark" | "system"; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-theme-toggle", "Show theme toggle"))
+      .setDesc(t("plugins.publish.option-show-theme-toggle-desc", "Let visitors switch between light and dark themselves."))
+      .addToggle(toggle => {
+        this.showThemeToggleToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showThemeToggle = v; });
+      });
+
+    // Reading experience
+    new Setting(this.el).setName(t("plugins.publish.label-site-reading-experience", "Reading experience")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-hide-title", "Hide title"))
+      .setDesc(t("plugins.publish.option-hide-title-desc", "Hide the note title shown above its content."))
+      .addToggle(toggle => {
+        this.hideTitleToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.hideTitle = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-readable-line-length", "Readable line length"))
+      .setDesc(t("plugins.publish.option-readable-line-length-desc", "Constrain content to a comfortable reading width."))
+      .addToggle(toggle => {
+        this.readableLineLengthToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.readableLineLength = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-strict-line-breaks", "Strict line breaks"))
+      .setDesc(t("plugins.publish.option-strict-line-breaks-desc", "Turn single line breaks in your notes into line breaks on the published page."))
+      .addToggle(toggle => {
+        this.strictLineBreaksToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.strictLineBreaks = v; });
+      });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-sliding-window-mode", "Sliding window mode"))
+      .setDesc(t("plugins.publish.option-sliding-window-mode-desc", "Open linked notes as new panes sliding in from the right, instead of navigating away."))
+      .addToggle(toggle => {
+        this.slidingWindowModeToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.slidingWindowMode = v; });
+      });
+
+    // Components (matches real Obsidian's "Components" group)
+    new Setting(this.el).setName(t("plugins.publish.label-site-components", "Components")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-navigation", "Show navigation"))
+      .setDesc(t("plugins.publish.option-show-navigation-desc", "Show a sidebar listing your published notes and folders."))
+      .addToggle(toggle => {
+        this.showNavigationToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showNavigation = v; });
+      });
+    const customizeSidebarSetting = this.el.createDiv("setting-item");
+    customizeSidebarSetting.createDiv("setting-item-info", el => {
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-customize-navigation", "Customize navigation") });
+    });
+    customizeSidebarSetting.createDiv("setting-item-control", el => {
+      const btn = el.createEl("button", { text: t("plugins.publish.button-customize-sidebar", "Customize sidebar") });
+      btn.addEventListener("click", () => new CustomizeSidebarModal(modal.app, modal.plugin).open());
+    });
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-show-search", "Enable search"))
+      .setDesc(t("plugins.publish.option-show-search-desc", "Show a search box for visitors to find notes on your site."))
+      .addToggle(toggle => {
+        this.showSearchToggle = toggle;
+        toggle.onChange(v => { this.pendingOptionChanges.showSearch = v; });
+      });
+
+    // Misc (matches real Obsidian's "Misc" group -- Password is above, in its own section)
+    new Setting(this.el).setName(t("plugins.publish.label-site-misc", "Misc")).setHeading();
+    new Setting(this.el)
+      .setName(t("plugins.publish.option-google-analytics", "Google Analytics tracking code"))
+      .addText(text => {
+        this.googleAnalyticsText = text;
+        text.onChange(v => { this.pendingOptionChanges.googleAnalytics = v; });
+      });
+    new Setting(this.el).addButton(btn =>
+      btn.setButtonText(t("plugins.publish.button-save-site-settings", "Save site settings")).setCta()
+        .onClick(() => void this.saveSiteOptions())
+    );
 
     // Password management
     new Setting(this.el).setName(t("plugins.publish.label-manage-passwords", "Manage passwords")).setHeading();
@@ -675,36 +863,40 @@ class SiteOptionsSection extends ModalSection {
       });
     });
 
-    // Sharing management — not a finished feature on our side yet, so it's kept hidden from the UI
-    // for now (commented out, but the code is kept).
-    /*
-    new Setting(this.el).setName(t("plugins.publish.label-manage-sharing", "Manage sharing", { name: modal.app.vault.getName() })).setHeading();
+    // Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- lets the owner
+    // invite other accounts to publish/unpublish on this site (not full vault-sync access, see
+    // that doc's confirmed real Obsidian permission table). Was previously commented out here as
+    // an unfinished feature; loadShares()/getShares()/removeShare() already worked correctly,
+    // only this invite block had real bugs (fixed below: the heading now actually uses its
+    // {{vaultName}} interpolation, the label/button no longer share one locale key, and the
+    // error handler matches this class's own errorMessage()/msg-generic-error convention instead
+    // of a raw untranslated string).
+    new Setting(this.el).setName(t("plugins.publish.label-manage-sharing", "Manage sharing for \"{{vaultName}}\"", { vaultName: modal.app.vault.getName() })).setHeading();
     this.shareListEl = this.el.createDiv("setting-item-list");
 
     const inviteSetting = this.el.createDiv("setting-item");
     inviteSetting.createDiv("setting-item-info", el => {
-      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.option-invite-user", "Share invite") });
+      el.createDiv({ cls: "setting-item-name", text: t("plugins.publish.label-share-invite", "Share invite") });
     });
     inviteSetting.createDiv("setting-item-control", el => {
       const emailInput = el.createEl("input", {
         type: "email",
-        placeholder: t("plugins.publish.placeholder-invite-user", "Email"),
-      }) as HTMLInputElement;
+        placeholder: t("plugins.publish.placeholder-share-invite-email", "Email"),
+      });
       emailInput.addClass("setting-input");
-      const inviteBtn = el.createEl("button", { text: t("plugins.publish.option-invite-user", "Invite") });
-      inviteBtn.addEventListener("click", async () => {
+      const inviteBtn = el.createEl("button", { text: t("plugins.publish.button-share-invite", "Invite") });
+      inviteBtn.addEventListener("click", () => { void (async () => {
         if (!emailInput.value) return;
         try {
           const client = await modal.plugin.getSyncClient();
           await client.inviteShare(emailInput.value);
           emailInput.value = "";
           await this.loadShares();
-        } catch (e: any) {
-          new Notice(`오류: ${e.message}`);
+        } catch (e: unknown) {
+          new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
         }
-      });
+      })(); });
     });
-    */
   }
 
   async load() {
@@ -714,8 +906,41 @@ class SiteOptionsSection extends ModalSection {
       const vaultName = this.modal.app.vault.getName();
       this.slugInput.value = slugs[vaultName] ?? vaultName;
     } catch { /* ignore */ }
+    await this.loadSiteOptions();
     await this.loadPasswords();
-    // await this.loadShares(); // not called while the sharing-management UI stays hidden
+    await this.loadShares();
+  }
+
+  private async loadSiteOptions() {
+    try {
+      const client = await this.modal.plugin.getSyncClient();
+      const options = await client.getSiteOptions();
+      this.siteNameText.setValue(options.siteName);
+      this.indexFileText.setValue(options.indexFile);
+      this.logoText.setValue(options.logo);
+      this.noindexToggle.setValue(options.noindex);
+      this.defaultThemeDropdown.setValue(options.defaultTheme);
+      this.showThemeToggleToggle.setValue(options.showThemeToggle);
+      this.showSearchToggle.setValue(options.showSearch);
+      this.showNavigationToggle.setValue(options.showNavigation);
+      this.hideTitleToggle.setValue(options.hideTitle);
+      this.readableLineLengthToggle.setValue(options.readableLineLength);
+      this.strictLineBreaksToggle.setValue(options.strictLineBreaks);
+      this.slidingWindowModeToggle.setValue(options.slidingWindowMode);
+      this.googleAnalyticsText.setValue(options.googleAnalytics);
+      this.pendingOptionChanges = {};
+    } catch { /* ignore */ }
+  }
+
+  private async saveSiteOptions() {
+    try {
+      const client = await this.modal.plugin.getSyncClient();
+      await client.setSiteOptions(this.pendingOptionChanges);
+      this.pendingOptionChanges = {};
+      new Notice(t("plugins.publish.msg-site-settings-saved", "Site settings saved."));
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
   }
 
   private async saveSlug() {
@@ -896,6 +1121,163 @@ class ManageFoldersModal extends Modal {
   }
 }
 
+// ─── CustomDomainModal ────────────────────────────────────────────────────────
+// See 26_커스텀_도메인_지원.md -- real Obsidian doesn't provision TLS certificates itself
+// (confirmed via Custom domains.md: CloudFlare or your own reverse proxy handles that), so this
+// modal is purely "which hostname does this vault answer to" bookkeeping, not a cert wizard.
+
+class CustomDomainModal extends Modal {
+  private urlInput!: HTMLInputElement;
+  private redirectToggle!: ToggleComponent;
+
+  constructor(app: App, private plugin: SyncPlugin) {
+    super(app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText(t("plugins.publish.label-custom-domain", "Custom domain"));
+
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t(
+        "plugins.publish.msg-custom-domain-help",
+        "Point your domain's CNAME at this server and enable Full SSL/TLS at your provider (e.g. CloudFlare) before saving here."
+      ),
+    });
+
+    new Setting(contentEl)
+      .setName(t("plugins.publish.option-custom-domain-url", "Domain"))
+      .addText(text => { this.urlInput = text.inputEl; });
+    new Setting(contentEl)
+      .setName(t("plugins.publish.option-custom-domain-redirect", "Redirect to your custom domain"))
+      .addToggle(toggle => { this.redirectToggle = toggle; });
+
+    try {
+      const client = await this.plugin.getSyncClient();
+      const current = await client.getCustomDomain();
+      this.urlInput.value = current.url;
+      this.redirectToggle.setValue(current.redirect);
+    } catch { /* ignore */ }
+
+    new Setting(contentEl).addButton(btn =>
+      btn.setButtonText(t("dialogue.button-save", "Save")).setCta().onClick(() => void this.save())
+    );
+  }
+
+  private async save() {
+    try {
+      const client = await this.plugin.getSyncClient();
+      await client.setCustomDomain(this.urlInput.value.trim(), this.redirectToggle.getValue());
+      new Notice(t("plugins.publish.msg-custom-domain-saved", "Custom domain saved."));
+      this.close();
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+// ─── CustomizeSidebarModal ───────────────────────────────────────────────────
+// Real Obsidian's own "Customize navigation → Customize sidebar" sub-dialog (drag-reorder +
+// hide top-level items, see 24_사이트_옵션_다이얼로그_실제_옵시디언과_비교.md). Uses up/down
+// move buttons instead of real drag-and-drop -- pointer/touch drag handling has real
+// cross-platform complexity this session can't visually verify without a browser, and buttons
+// give the exact same end result (see 34_실제_아키텍처_전환_Customize_sidebar.md). The ordering/
+// hiding logic itself lives in navigationOrdering.ts (unit tested there), matching
+// pumice-server's own _build_navigation_tree fallback exactly so what's edited here is what the
+// site actually renders.
+class CustomizeSidebarModal extends Modal {
+  private entries: SidebarEntry[] = [];
+  private listEl!: HTMLElement;
+
+  constructor(app: App, private plugin: SyncPlugin) {
+    super(app);
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.titleEl.setText(t("plugins.publish.option-customize-navigation", "Customize navigation"));
+
+    contentEl.createEl("p", {
+      cls: "setting-item-description",
+      text: t(
+        "plugins.publish.msg-customize-sidebar-help",
+        "Reorder or hide top-level notes and folders shown in your site's navigation sidebar."
+      ),
+    });
+
+    this.listEl = contentEl.createDiv("pumice-customize-sidebar-list");
+
+    try {
+      const client = await this.plugin.getSyncClient();
+      const [files, options] = await Promise.all([client.getPublishedFiles(), client.getSiteOptions()]);
+      const topLevelNames = deriveTopLevelNames(files);
+      this.entries = mergeOrdering(topLevelNames, options.navigationOrdering, options.navigationHiddenItems);
+    } catch { /* ignore */ }
+
+    this.render();
+
+    new Setting(contentEl).addButton(btn =>
+      btn.setButtonText(t("dialogue.button-save", "Save")).setCta().onClick(() => void this.save())
+    );
+  }
+
+  private render() {
+    this.listEl.empty();
+    this.entries.forEach((entry, index) => {
+      const row = this.listEl.createDiv("setting-item");
+      row.createDiv("setting-item-info", el => {
+        el.createDiv({ cls: "setting-item-name", text: entry.name });
+      });
+      row.createDiv("setting-item-control", el => {
+        const hiddenCheckbox = el.createEl("input", { type: "checkbox" });
+        hiddenCheckbox.checked = entry.hidden;
+        hiddenCheckbox.setAttribute("aria-label", t("plugins.publish.label-hide-nav-item", "Hide"));
+        hiddenCheckbox.addEventListener("change", () => {
+          this.entries = toggleHidden(this.entries, index);
+        });
+
+        const upBtn = el.createEl("button", { cls: "clickable-icon" });
+        setIcon(upBtn, "lucide-arrow-up");
+        upBtn.setAttribute("aria-label", t("plugins.publish.label-move-up", "Move up"));
+        upBtn.addEventListener("click", () => {
+          this.entries = moveEntry(this.entries, index, -1);
+          this.render();
+        });
+
+        const downBtn = el.createEl("button", { cls: "clickable-icon" });
+        setIcon(downBtn, "lucide-arrow-down");
+        downBtn.setAttribute("aria-label", t("plugins.publish.label-move-down", "Move down"));
+        downBtn.addEventListener("click", () => {
+          this.entries = moveEntry(this.entries, index, 1);
+          this.render();
+        });
+      });
+    });
+  }
+
+  private async save() {
+    try {
+      const client = await this.plugin.getSyncClient();
+      await client.setSiteOptions(toSiteOptionsPatch(this.entries));
+      new Notice(t("plugins.publish.msg-customize-sidebar-saved", "Sidebar order saved."));
+      this.close();
+    } catch (e: unknown) {
+      new Notice(t("plugins.publish.msg-generic-error", "Error: {{error}}", { error: errorMessage(e) }));
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 // ─── SiteFiltersSection ──────────────────────────────────────────────────────
 // Core's actual structure (app.js's SiteOptionsSection): not a list of pattern strings, but two
 // Setting rows — "included folders" / "excluded folders" — each with a "manage" button that opens a
@@ -1007,7 +1389,7 @@ class SiteFiltersSection extends ModalSection {
 class UploadProgressSection extends ModalSection {
   constructor(modal: PublishModal) { super(modal); }
 
-  async startUpload(diffs: DiffItem[], client: SyncClient, focusFile?: TFile) {
+  async startUpload(diffs: DiffItem[], client: SyncClient, focusFile?: TFile, remoteSite?: RemoteSite) {
     this.el.empty();
 
     const changesContainer = this.el.createDiv("list-item-parent upload-progress-container");
@@ -1059,13 +1441,22 @@ class UploadProgressSection extends ModalSection {
       info.flairEl.setText(t("plugins.publish.label-status-uploading", "Uploading..."));
       try {
         if (diff.type === "deleted" || diff.type === "to-delete") {
-          await client.unpublishFile(diff.path);
+          await client.unpublishFile(diff.path, remoteSite);
           info.flairEl.setText(t("plugins.publish.label-status-deleted", "Deleted"));
         } else {
-          const hash = await client.publishFile(diff.path);
+          const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
+          // Re-read permalink/description/image fresh at upload time rather than threading them
+          // through the diff scan -- unlike the publish flag, none of them affect what's
+          // shown/checked in the review list, so there's no reason to carry them that far.
+          const meta = file instanceof TFile ? {
+            permalink: getPublishPermalink(this.modal.app, file),
+            description: getPublishDescription(this.modal.app, file),
+            image: getPublishImage(this.modal.app, file),
+            aliases: getPublishAliases(this.modal.app, file),
+          } : undefined;
+          const hash = await client.publishFile(diff.path, meta, remoteSite);
           // Uploading a file means we just hashed it anyway — seed the shared hash cache with that
           // value so the next Publish scan doesn't re-read and re-hash this same content.
-          const file = this.modal.app.vault.getAbstractFileByPath(diff.path);
           if (file instanceof TFile) this.modal.plugin.contentHashCache.set(file, hash);
           info.flairEl.setText(t("plugins.publish.label-status-published", "Published"));
         }
@@ -1109,30 +1500,49 @@ export class PublishModal extends Modal {
   // server for the real username tied to the token and updates this if it differs. If the two
   // differ, the upload still succeeds (saved under the server-recognized name's directory) but the
   // "view site" link would point at the wrong (empty) directory named after the local setting.
+  // Not applicable when remoteSite is set (a Site collaboration target, see
+  // 36_실제_아키텍처_전환_Site_collaboration.md) -- there, owner+vaultId are already known exactly,
+  // nothing to guess or refresh.
   siteUrl: string;
 
-  constructor(readonly app: App, readonly plugin: SyncPlugin, private focusFile?: TFile) {
+  constructor(readonly app: App, readonly plugin: SyncPlugin, private focusFile?: TFile, readonly remoteSite?: SharedSite) {
     super(app);
     // grpc-publish-modal: reusing the same classes as core Publish (tree-item, setting-item, etc.)
     // meant core's stylesheet applied to our modal too, making it "look just like core" — so all the
     // CSS that gives this its own look is scoped under this class, to avoid leaking into other core
     // UI like the file explorer.
     this.modalEl.addClass("mod-publish", "mod-lg", "mod-scrollable-content", "grpc-publish-modal");
-    this.siteUrl = this.buildSiteUrl(plugin.settings.userName || "default_user");
+    this.siteUrl = this.remoteSite
+      ? this.computeSiteUrl(this.remoteSite.owner, this.remoteSite.vaultId)
+      : this.computeSiteUrl(plugin.settings.userName || "default_user", this.app.vault.getName());
   }
 
-  private buildSiteUrl(username: string): string {
+  private computeSiteUrl(owner: string, vaultId: string): string {
     const { settings } = this.plugin;
     const protocol = settings.useTls ? "https" : "http";
-    const host = settings.serverHost === "localhost" ? "127.0.0.1" : settings.serverHost;
-    const port = settings.serverPort;
-    return `${protocol}://${host}:${port}/publish/${encodeURIComponent(username)}/${this.app.vault.getName()}/`;
+    return buildRemoteSiteUrl(protocol, settings.serverHost, settings.serverPort, { owner, vaultId });
   }
 
   async onOpen() {
     const { contentEl } = this;
     contentEl.empty();
     this.titleEl.setText(t("plugins.publish.action-publish-changes", "Publish changes"));
+
+    // Vault sharing (see 14_vault_sharing_설계.md) is still separate from -- and takes priority
+    // over -- Site collaboration (remoteSite, 36_실제_아키텍처_전환_Site_collaboration.md): a
+    // shared/mirrored vault via full sync doesn't also support collaborator-publishing to a
+    // third site in this pass, so this guard fires regardless of remoteSite.
+    if (this.plugin.settings.sharedVaultOwner) {
+      contentEl.createEl("p", {
+        cls: "setting-item-description",
+        text: t(
+          "plugins.publish.msg-not-available-for-shared-vault",
+          "Publish isn't available for a shared vault yet -- only the vault owner ({{owner}}) can manage Publish for it.",
+          { owner: this.plugin.settings.sharedVaultOwner }
+        ),
+      });
+      return;
+    }
 
     contentEl.createDiv("message-container", el => {
       this.errorMessageEl = el.createDiv("message mod-error");
@@ -1145,8 +1555,10 @@ export class PublishModal extends Modal {
     let client: SyncClient | null = null;
     try {
       client = await this.plugin.getSyncClient();
-      const realUsername = await client.getAuthenticatedUsername();
-      if (realUsername) this.siteUrl = this.buildSiteUrl(realUsername);
+      if (!this.remoteSite) {
+        const realUsername = await client.getAuthenticatedUsername();
+        if (realUsername) this.siteUrl = this.computeSiteUrl(realUsername, this.app.vault.getName());
+      }
     } catch {
       // If looking up the server's username fails (offline, etc.), just keep the local
       // settings-based guess built in the constructor.
@@ -1161,26 +1573,21 @@ export class PublishModal extends Modal {
       // "Publish current file" (this.focusFile set, opened from the file context menu) is a single
       // explicit action on one file — it doesn't need the server's whole file list or a vault-wide
       // walk the way the general "Publish changes" entry point (no focus file) does.
+      const includeFolders = this.plugin.settings.publishIncludeFolders.split("\n").map(p => p.trim()).filter(Boolean);
+      const excludeFolders = this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean);
+
       if (this.focusFile) {
-        const publishFlag = getPublishFlag(this.app, this.focusFile);
-        if (publishFlag === null) {
-          // Neither true nor false: publishing (or cancelling) a file with no explicit
-          // frontmatter at all would go live/gone on the server yet be invisible to future
-          // folder-wide scans (scanForChanges is frontmatter-driven) — require the frontmatter
-          // to be set BEFORE acting rather than guessing.
-          this.showError(t("plugins.publish.msg-set-publish-frontmatter-first", 'Add "publish: true" or "publish: false" to this file\'s frontmatter first.'));
-          this.reviewChangesSection.setDiffs([], this.focusFile);
-        } else {
-          // true -> publish; false -> cancel (unpublish) -- the server's remove endpoint is a
-          // harmless no-op if the file was never actually published, so there's no need to
-          // fetch the server's file list first just to check.
-          this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile.path, publishFlag), this.focusFile);
-        }
+        // true/false/null all have well-defined behavior now (matches real Obsidian's own
+        // single-file action, which never blocks on an undetermined flag either) -- the
+        // server's remove endpoint is a harmless no-op if the file was never actually
+        // published, so there's no need to fetch the server's file list first just to check.
+        const publishFlag = getPublishFlag(this.app, this.focusFile, includeFolders, excludeFolders);
+        this.reviewChangesSection.setDiffs(scanSingleFile(this.focusFile.path, publishFlag), this.focusFile);
       } else {
         const diffs = await scanForChanges(
           this.app, client ?? (client = await this.plugin.getSyncClient()),
-          this.plugin.settings.publishExcludeFolders.split("\n").map(p => p.trim()).filter(Boolean),
-          this.plugin.contentHashCache
+          includeFolders, excludeFolders,
+          this.plugin.contentHashCache, this.remoteSite
         );
         this.reviewChangesSection.setDiffs(diffs, this.focusFile);
       }
@@ -1216,7 +1623,7 @@ export class PublishModal extends Modal {
     }
     const client = await this.plugin.getSyncClient();
     this.openSection(this.uploadProgressSection);
-    await this.uploadProgressSection.startUpload(diffs, client, this.focusFile);
+    await this.uploadProgressSection.startUpload(diffs, client, this.focusFile, this.remoteSite);
   }
 
   onClose() { this.contentEl.empty(); }

@@ -32,3 +32,26 @@ export function extractSseFrames(buffer: string): SseExtractResult {
 export function nextBackoffMs(currentMs: number, maxMs: number): number {
   return Math.min(currentMs * 2, maxMs);
 }
+
+// 2026-08 Obsidian core reconnect fidelity follow-up (see
+// #14_옵시디언싱크_정렬_구현계획.md): core's own reconnect backoff isn't just `base * 2^n` --
+// it also multiplies by a ±50% random jitter factor each attempt, so many clients that dropped
+// at the same moment (e.g. a server restart) don't all retry in lockstep (thundering herd).
+// Deliberately kept separate from nextBackoffMs() above rather than folded into it: the stored
+// backoffMs a caller carries between retries stays a clean deterministic doubling sequence, and
+// jitter is instead applied fresh at each actual use site (see main.ts's runLiveUpdateLoop) --
+// matching how core recomputes its own jitter per attempt rather than persisting a jittered
+// value forward. randomFn is injectable so this stays unit-testable without mocking global
+// Math.random.
+export function applyJitter(ms: number, randomFn: () => number = Math.random): number {
+  return ms * (0.5 + randomFn());
+}
+
+// How often runLiveUpdateLoop forces a sync while the live connection is up, independent of
+// whether a push notification actually arrived -- mirrors Obsidian core's own Sync client
+// (`window.setInterval(this.requestSync.bind(this), 3e4)`, confirmed via obsidian.asar v1.13.6,
+// see #14_옵시디언싱크_정렬_구현계획.md). This is pumice's only periodic re-sync mechanism now
+// (the old opt-in autoSync timer, and syncOnStartup with it, were both removed as redundant --
+// see settings.ts) -- without it, a lost/dropped push notification would go unnoticed until the
+// next manual sync.
+export const LIVE_SYNC_SAFETY_NET_INTERVAL_MS = 30_000;

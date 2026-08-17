@@ -1,14 +1,17 @@
 node_modules/
-# src/generated/*.ts and *.js are the actual protoc-gen-js/protoc-gen-grpc-web implementation --
-# gitignored and regenerated locally (scripts/gen-proto.mjs, wired up via ensure-generated.mjs's
-# pre-dev/build/lint hooks). The *.d.ts files alongside them ARE committed (the `!` negation below)
-# so external tools that lint/typecheck this repo without running that generation step first can
-# still resolve real types for pb.*/SyncServiceClient, instead of every reference collapsing to
-# `any`. `src/generated/*` (not `src/generated/`) is required for the negation to take effect --
-# git won't look inside a directory that's excluded by name.
-src/generated/*
-!src/generated/*.d.ts
-bin/protoc-gen-grpc-web
 main.js
+# Local-only session notes for Claude's own work log -- never committed/pushed (see
+# feedback_never_git_add_dash_a memory: llm-wiki was previously committed by mistake and had to
+# be purged from pushed history).
+llm-wiki/
+# Root-level numbered design/planning docs (e.g. 14_vault_sharing_설계.md, #4_구현_계획.md) --
+# same rule as llm-wiki/ above: local-only, never committed. Docs 14-48 were committed by
+# mistake over many past sessions and had to be purged from history (2026-08-17). They now
+# live in llm-wiki/pumice-design-docs/ (already covered by the llm-wiki/ rule above) -- these
+# two patterns are just a safety net in case one gets created at the root again.
+/#*.md
+/[0-9]*_*.md
+git-force-refetch-feature-websocket.txt
 docs/_build/
 docs/locale/*/LC_MESSAGES/*.mo
+coverage/

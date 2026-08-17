@@ -1,9 +1,14 @@
-import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon } from "obsidian";
+import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon, setTooltip } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
 import { SyncClient, type SyncProgressPhase } from "./syncClient";
+import { WsSyncTransport, WsTransportError, HEARTBEAT_CHECK_INTERVAL_MS, type PushedFileChangeMeta } from "./wsTransport";
+import { WsSyncTransportAdapter } from "./wsSyncTransportAdapter";
+import type { SyncTransport } from "./syncTransport";
 import { PublishModal } from "./publishModal";
+import { SharedSitePickerModal } from "./sharedSitePickerModal";
+import { isPublishSupportedFile } from "./publishEligibility";
 import { SyncHistoryModal } from "./syncHistoryModal";
 import { LocalSnapshotStore } from "./localSnapshotStore";
 import { ContentHashCache } from "./contentHashCache";
@@ -12,7 +17,7 @@ import { SyncDiagnosticsLog } from "./syncDiagnosticsLog";
 import { SyncDiagnosticsModal } from "./syncDiagnosticsModal";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
-import { extractSseFrames, nextBackoffMs } from "./liveUpdates";
+import { applyJitter, LIVE_SYNC_SAFETY_NET_INTERVAL_MS, nextBackoffMs } from "./liveUpdates";
 import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
@@ -23,6 +28,7 @@ interface PersistedPluginData {
   settings?: Partial<SyncPluginSettings>;
   deletedFiles?: Record<string, number>;
   lastKnownPluginPaths?: Record<string, number>;
+  lastKnownChangeId?: number;
 }
 
 // The "Vault Sync" ribbon button has no core equivalent, so there's no core translation key for
@@ -70,6 +76,15 @@ export default class SyncPlugin extends Plugin {
   // ignorePatterns) -- diffed against the current listing each sync to detect plugin removals,
   // since vault.on("delete", ...) never fires for config-dir paths. See #7_플러그인_동기화_구현_계획.md.
   lastKnownPluginPaths: Record<string, number> = {};
+  // Version catch-up baseline (PR2/PR3 of #14_옵시디언싱크_정렬_구현계획.md) -- the
+  // vault_change_log change_id this device last caught up to on the server, sent back in every
+  // init so a reconnect only needs to replay what changed since then (via a catch-up `push`
+  // burst) instead of a full delta_req scan. 0 means "no baseline yet" (brand-new device or
+  // first sync ever), which the server takes as a signal to skip the catch-up burst entirely.
+  // A single scalar, unlike lastSyncedHashStore/contentHashCache (per-path, IndexedDB-backed) --
+  // this is one number per vault, so it rides along with the plugin's existing data.json
+  // persistence (savePluginData()) rather than warranting a whole separate store.
+  lastKnownChangeId = 0;
   snapshotStore!: LocalSnapshotStore;
   contentHashCache!: ContentHashCache;
   lastSyncedHashStore!: LastSyncedHashStore;
@@ -79,7 +94,6 @@ export default class SyncPlugin extends Plugin {
   // present (for esbuild.config.mjs), that resolves to Node's Timeout instead of the browser's
   // number -- but window.setInterval/setTimeout always return a number in the Electron/browser
   // renderer context a plugin actually runs in.
-  private autoSyncTimer: number | null = null;
   private debounceTimer: number | null = null;
   private ribbonReplaceTimers: number[] = [];
   // Paths the in-progress sync is currently writing to the vault itself -- shared with SyncClient
@@ -89,12 +103,23 @@ export default class SyncPlugin extends Plugin {
   // user having just edited it, so a sync that pulled anything down always queued a pointless
   // extra sync 3 seconds later.
   private selfWritePaths: Set<string> = new Set();
-  // Prevents overlapping syncNow() calls (manual click racing the debounce timer or the auto-sync
-  // interval, or two manual clicks in a row) from each computing their own independent Delta and
-  // stepping on each other -- a request to sync while one is already running is queued instead,
-  // and runs once the current one finishes.
+  // Prevents overlapping syncNow() calls (manual click racing the debounce timer or the
+  // safety-net's periodic sync, or two manual clicks in a row) from each computing their own
+  // independent Delta and stepping on each other -- a request to sync while one is already
+  // running is queued instead, and runs once the current one finishes.
   private isSyncing = false;
-  private syncQueuedWhileRunning = false;
+  // Mirrors real Obsidian core Sync's own persistent error indicator (this.error/fileRetry in
+  // its SyncStore) -- true once a sync attempt either threw or finished with files still failing
+  // after in-sync retries, cleared again only by a subsequent sync that completes clean. Read by
+  // setIdleStatus() so the status bar keeps showing "error" through reconnects/idle periods
+  // instead of quietly reverting to "synced" the moment the connection itself recovers. See
+  // llm-wiki/12-*.md.
+  private lastSyncFailed = false;
+  // null = nothing queued. Otherwise, whether the queued request should stay silent (see
+  // syncNow's own `silent` param) -- if any queued attempt wants Notices shown, this ends up
+  // false, so a manual click never gets silently swallowed just because an automatic sync
+  // happened to already be queued in front of it.
+  private syncQueuedSilent: boolean | null = null;
   // Set once in onunload() so an in-flight runLiveUpdateLoop() notices (between reads/retries)
   // and stops re-looping, instead of holding the plugin process open forever.
   private unloading = false;
@@ -109,6 +134,21 @@ export default class SyncPlugin extends Plugin {
   // unless the user opts in (Settings > Appearance > "Show status bar"), so this is a bonus for
   // desktop users rather than the primary indicator -- see liveConnectionState above for that.
   private statusBarItemEl: HTMLElement | null = null;
+  // Single persistent WS connection, shared by every syncNow()/testConnection() call and by the
+  // live-push loop -- reused across calls instead of a fresh connection (and auth round trip)
+  // per sync, matching #11_websocket_동기화_프로토콜_설계.md's whole premise. Null whenever no
+  // connection currently exists (never connected yet, or it dropped -- see wsTransport's
+  // onClose); getTransport() connects on demand and caches the result here.
+  private wsTransport: WsSyncTransport | null = null;
+  private wsHeartbeatTimer: number | null = null;
+  // Coalesces concurrent getTransport() callers (e.g. the live-update loop reconnecting while a
+  // manual sync is also trying to connect) onto the same in-flight connect() instead of racing
+  // multiple sockets.
+  private wsConnecting: Promise<WsSyncTransport> | null = null;
+  // Lets runLiveUpdateLoop await "this connection dropped" instead of polling -- resolved by
+  // the onClose handler set up alongside wsTransport in getTransport().
+  private wsClosedPromise: Promise<void> | null = null;
+  private wsClosedResolve: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -133,6 +173,9 @@ export default class SyncPlugin extends Plugin {
           ? t("settings.msg-login-success-named", "Logged in as {{username}} — token saved.", { username: params.username })
           : t("settings.msg-login-success", "Logged in — token saved.")
       );
+      // Connect-once-configured (see startLiveUpdatesIfNeeded's own comment) -- starts the
+      // persistent connection immediately rather than waiting for the next syncNow()/app restart.
+      this.startLiveUpdatesIfNeeded();
       // The settings tab may already be open (that's usually how the user got to the "Log in"
       // button in the first place) and won't otherwise know the token changed underneath it --
       // refresh it so it reflects the new state instead of still showing the login prompt.
@@ -155,7 +198,7 @@ export default class SyncPlugin extends Plugin {
     await this.contentHashCache.init();
 
     // Tracks the last content hash both this device and the server agreed on per path -- the
-    // "base" version the "merge" conflictResolution mode diffs local/remote changes against.
+    // "base" version the always-on 3-way text merge diffs local/remote changes against.
     this.lastSyncedHashStore = new LastSyncedHashStore();
     await this.lastSyncedHashStore.init();
 
@@ -189,6 +232,14 @@ export default class SyncPlugin extends Plugin {
       id: "publish-changes",
       name: t("plugins.publish.action-publish-changes", "Publish changes"),
       callback: () => new PublishModal(this.app, this).open(),
+    });
+
+    // Site collaboration (see 36_실제_아키텍처_전환_Site_collaboration.md) -- command palette
+    // only for now (no ribbon icon/settings-tab shortcut), a deliberate minimal-footprint choice.
+    this.addCommand({
+      id: "publish-shared-site",
+      name: t("plugins.publish.action-publish-shared-site", "Publish a shared site…"),
+      callback: () => new SharedSitePickerModal(this.app, this).open(),
     });
 
     this.addCommand({
@@ -306,14 +357,6 @@ export default class SyncPlugin extends Plugin {
       })
     );
 
-    if (this.settings.syncOnStartup) {
-      this.app.workspace.onLayoutReady(() => this.syncNow());
-    }
-
-    if (this.settings.autoSync) {
-      this.startAutoSync();
-    }
-
     this.statusBarItemEl = this.addStatusBarItem();
     this.startLiveUpdatesIfNeeded();
 
@@ -355,6 +398,7 @@ export default class SyncPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file, source) => {
         if (!(file instanceof TFile)) return; // exclude TFolder
+        if (!isPublishSupportedFile(file.extension, file.name)) return; // matches real Obsidian's isFileSupported
         const publishFileLabel = t("plugins.publish.action-publish-file", "Publish current file");
         menu.addItem((item) => {
           item
@@ -393,10 +437,98 @@ export default class SyncPlugin extends Plugin {
     );
   }
 
+  private buildWsUrl(): string {
+    const protocol = this.settings.useTls ? "wss" : "ws";
+    return `${protocol}://${this.settings.serverHost}:${this.settings.serverPort}/ws`;
+  }
+
+  // Connects (or reuses) the single shared WS transport -- see wsTransport field comment. Throws
+  // if there's no stored token, same as every prior call site that needed one did.
+  private async getTransport(): Promise<SyncTransport> {
+    if (this.wsTransport) return new WsSyncTransportAdapter(this.wsTransport);
+    if (this.wsConnecting) return new WsSyncTransportAdapter(await this.wsConnecting);
+
+    const token = await this.getToken();
+    if (!token) {
+      throw new Error(t("settings.msg-no-token", "No sync token is set."));
+    }
+
+    this.wsConnecting = (async () => {
+      const ws = new WsSyncTransport((url) => new WebSocket(url));
+      // Registered *before* connect() resolves, not after -- a catch-up push burst (PR2 of
+      // #14_옵시디언싱크_정렬_구현계획.md) can arrive on the wire immediately once init_ok is
+      // sent, and registering these callbacks only once `await ws.connect(...)` returns left a
+      // real gap where an early push/ready could be silently dropped (found while designing
+      // PR3 -- not previously exploitable in practice since a live push landing in that exact
+      // window was rare, but the catch-up burst makes it routine).
+      ws.onChangePush((file) => void this.applyPushedChange(file));
+      ws.onReady((payload) => {
+        this.lastKnownChangeId = payload.latestChangeId;
+        void this.savePluginData();
+      });
+      ws.onClose(() => {
+        if (this.wsTransport === ws) this.wsTransport = null;
+        if (this.wsHeartbeatTimer !== null) {
+          window.clearInterval(this.wsHeartbeatTimer);
+          this.wsHeartbeatTimer = null;
+        }
+        // Real core doesn't visually distinguish "reconnecting" from a fresh connection attempt
+        // either -- both just show its "syncing" state with a "Connecting to server" tooltip.
+        this.setLiveConnectionState(this.hasStoredToken ? "connecting" : "disabled");
+        this.wsClosedResolve?.();
+        this.wsClosedResolve = null;
+      });
+      this.wsClosedPromise = new Promise((resolve) => (this.wsClosedResolve = resolve));
+      // Started *before* awaiting connect(), not after -- otherwise a server that never answers
+      // init (a dropped frame, an overloaded/stuck server) hangs this call forever with no way to
+      // detect it: checkHeartbeat()'s 60s checkRequestTimeouts() is the only timeout mechanism
+      // this transport has at all, and connect()'s init request needs that same protection every
+      // other request already gets. Safe to start this early because checkHeartbeat() itself
+      // knows not to send an idle ping before init succeeds (see wsTransport.ts's `authenticated`
+      // flag) -- a real bug found 2026-08-15 investigating a "Test connection does nothing" report;
+      // see llm-wiki/11-*.md.
+      this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
+      await ws.connect(this.buildWsUrl(), {
+        token,
+        vaultId: this.app.vault.getName(),
+        vaultOwner: this.settings.sharedVaultOwner || "",
+        deviceName: this.settings.deviceName || "",
+        userName: this.settings.userName || "",
+        clientVersion: this.manifest.version,
+        lastKnownChangeId: this.lastKnownChangeId,
+      });
+      this.wsTransport = ws;
+      this.setIdleStatus();
+      return ws;
+    })();
+
+    try {
+      return new WsSyncTransportAdapter(await this.wsConnecting);
+    } finally {
+      this.wsConnecting = null;
+    }
+  }
+
+  // Public: settingsTab.ts calls this directly when the stored token is deleted, so a logout
+  // drops the persistent connection immediately instead of leaving it open (still authenticated
+  // under the now-deleted token, from the server's perspective) until it happens to drop on its
+  // own -- runLiveUpdateLoop()'s own hasStoredToken check would eventually notice too, but only
+  // at its next reconnect/safety-net cycle, not right away.
+  disconnectTransport(): void {
+    this.wsTransport?.close();
+    this.wsTransport = null;
+    if (this.wsHeartbeatTimer !== null) {
+      window.clearInterval(this.wsHeartbeatTimer);
+      this.wsHeartbeatTimer = null;
+    }
+  }
+
   async getSyncClient(): Promise<SyncClient> {
     const token = await this.getToken();
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+    const transport = await this.getTransport();
     return new SyncClient(
+      transport,
       this.app.vault,
       this.app.fileManager,
       pluginDir,
@@ -423,7 +555,7 @@ export default class SyncPlugin extends Plugin {
 
   onunload(): void {
     this.unloading = true;
-    this.stopAutoSync();
+    this.disconnectTransport();
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -438,8 +570,23 @@ export default class SyncPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const data = ((await this.loadData()) as PersistedPluginData | null) || {};
     this.settings = Object.assign({}, getDefaultSettings(this.app.vault.configDir), data.settings || data);
+
+    // One-time migration: ConflictResolution narrowed from 4 values to 2 -- "manual"/"merge"
+    // removed since text files now always attempt a 3-way merge unconditionally (see
+    // 16_conflict_resolution_텍스트_상시병합.md). Both legacy values already behaved exactly
+    // like today's "server-wins" for whatever they fell back to (non-text, or no recorded base
+    // hash to merge against), so this is lossless there; text files actually improve (they now
+    // always try to merge, where before only "merge" mode did). Cast needed since the legacy
+    // strings no longer typecheck as ConflictResolution.
+    const legacyConflictResolution = this.settings.conflictResolution as string;
+    if (legacyConflictResolution === "manual" || legacyConflictResolution === "merge") {
+      this.settings.conflictResolution = "server-wins";
+      await this.savePluginData();
+    }
+
     this.deletedFiles = data.deletedFiles || {};
     this.lastKnownPluginPaths = data.lastKnownPluginPaths || {};
+    this.lastKnownChangeId = data.lastKnownChangeId || 0;
 
     // One-time migration: e2eePassword used to be persisted in plaintext here. Move any leftover
     // value into secretStorage (same treatment as the auth token in tokenStore.ts) and never write
@@ -457,11 +604,9 @@ export default class SyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.savePluginData();
-    this.restartAutoSync();
-    // No "stop" call needed here the way autoSync has one: runLiveUpdateLoop() already checks
-    // this.settings.liveUpdates on every iteration and exits by itself once it's turned off.
-    // This only covers turning it *on* while the plugin is already running (there's no timer to
-    // arm the way autoSync has -- startLiveUpdatesIfNeeded() is a no-op if a loop is already up).
+    // A no-op whenever a live-update loop is already up (startLiveUpdatesIfNeeded()'s own
+    // guard) -- this only matters right after a token is saved/deleted while the plugin is
+    // already running, since hasStoredToken can change without a fresh onload().
     this.startLiveUpdatesIfNeeded();
   }
 
@@ -470,6 +615,7 @@ export default class SyncPlugin extends Plugin {
       settings: this.settings,
       deletedFiles: this.deletedFiles,
       lastKnownPluginPaths: this.lastKnownPluginPaths,
+      lastKnownChangeId: this.lastKnownChangeId,
     });
   }
 
@@ -485,7 +631,9 @@ export default class SyncPlugin extends Plugin {
     }
 
     const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+    const transport = await this.getTransport();
     const client = new SyncClient(
+      transport,
       this.app.vault,
       this.app.fileManager,
       pluginDir,
@@ -501,22 +649,36 @@ export default class SyncPlugin extends Plugin {
     await client.testConnection();
   }
 
-  async syncNow(): Promise<void> {
-    // A sync already in flight (manual click racing the debounce timer / auto-sync interval, or
-    // two triggers in quick succession) is not started a second time in parallel -- each one would
-    // compute its own independent Delta and step on the other's writes. Instead this request is
-    // queued and runs once, right after the current one finishes, so concurrent client/server
-    // changes still converge without the user needing to notice and retry manually.
+  // `silent` suppresses every Notice this method would otherwise show (starting/progress/
+  // complete/failed/no-token), matching real Obsidian core Sync's own quiet background
+  // behavior -- it never pops a toast for a routine automatic sync, only reflecting state via
+  // its status indicator (pumice's equivalent: liveConnectionState / the settings tab's
+  // "Connection status" line). Pass true from every automatic call site (the 30s safety net,
+  // the debounced-local-edit trigger, and the queued-retrigger below) and leave it false for the
+  // two genuinely interactive ones (the ribbon icon and the command palette action), where the
+  // user is actively waiting for feedback. Failures are still logged to syncDiagnosticsLog
+  // either way, just without an interrupting popup when silent.
+  async syncNow(silent = false): Promise<void> {
+    // A sync already in flight (manual click racing the debounce timer / safety-net's periodic
+    // sync, or two triggers in quick succession) is not started a second time in parallel --
+    // each one would compute its own independent Delta and step on the other's writes. Instead
+    // this request is queued and runs once, right after the current one finishes, so concurrent
+    // client/server changes still converge without the user needing to notice and retry manually.
     if (this.isSyncing) {
       this.logDebug("Sync already in progress -- queuing this request to run once it finishes");
-      this.syncQueuedWhileRunning = true;
+      // Prefer non-silent if anything queued so far wanted Notices -- see syncQueuedSilent's own comment.
+      this.syncQueuedSilent = this.syncQueuedSilent === false ? false : silent;
       return;
     }
-    this.isSyncing = true;
+    this.setSyncActivity(true);
+    // Whether this attempt should count toward lastSyncFailed once activity turns back off --
+    // defaults to false so an early return before a real attempt (e.g. no token configured yet)
+    // doesn't count as a failure; set for real inside the actual sync attempt below.
+    let failed = false;
     try {
       const token = await this.getToken();
       if (!token) {
-        new Notice(t("settings.msg-no-token", "No sync token is set."));
+        if (!silent) new Notice(t("settings.msg-no-token", "No sync token is set."));
         return;
       }
 
@@ -527,11 +689,13 @@ export default class SyncPlugin extends Plugin {
       };
       // duration=0 keeps this Notice open until hide() is called below, so it can be updated in
       // place as progress comes in instead of the old fire-and-forget start/end Notice pair.
-      const progressNotice = new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
+      const progressNotice = silent ? null : new Notice(t("settings.msg-sync-starting", "Starting sync..."), 0);
 
       try {
         const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+        const transport = await this.getTransport();
         const client = new SyncClient(
+          transport,
           this.app.vault,
           this.app.fileManager,
           pluginDir,
@@ -544,11 +708,11 @@ export default class SyncPlugin extends Plugin {
           },
           this.contentHashCache,
           ({ phase, done, total }) => {
-            progressNotice.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
+            progressNotice?.setMessage(t("plugins.sync.msg-sync-progress", "Syncing ({{phase}} {{done}}/{{total}})", { phase: phaseLabel[phase], done, total }));
           },
           ({ delayMs, retriesLeft }) => {
             // Reuses the same progressNotice instead of popping up a separate toast on top of it.
-            progressNotice.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
+            progressNotice?.setMessage(t("plugins.sync.msg-retry-in-progress", "Sync failed, retrying in {{delay}}ms... ({{retries}} retries left)", { delay: delayMs, retries: retriesLeft }));
           },
           this.selfWritePaths,
           (level, message) => this.syncDiagnosticsLog.log(level, message),
@@ -561,59 +725,117 @@ export default class SyncPlugin extends Plugin {
         );
 
         const result = await client.sync();
-        progressNotice.hide();
-        new Notice(
-          result.failed > 0
-            ? t(
-                "settings.msg-sync-complete-with-failed",
-                "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted, {{failed}} failed after retrying",
-                { uploaded: result.uploaded, downloaded: result.downloaded, deleted: result.deleted, failed: result.failed }
-              )
-            : t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
-                uploaded: result.uploaded,
-                downloaded: result.downloaded,
-                deleted: result.deleted,
-              })
-        );
+        failed = result.failed > 0;
+        progressNotice?.hide();
+        if (!silent) {
+          new Notice(
+            result.failed > 0
+              ? t(
+                  "settings.msg-sync-complete-with-failed",
+                  "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted, {{failed}} failed after retrying",
+                  { uploaded: result.uploaded, downloaded: result.downloaded, deleted: result.deleted, failed: result.failed }
+                )
+              : t("settings.msg-sync-complete", "Sync complete: {{uploaded}} uploaded, {{downloaded}} downloaded, {{deleted}} deleted", {
+                  uploaded: result.uploaded,
+                  downloaded: result.downloaded,
+                  deleted: result.deleted,
+                })
+          );
+        }
         await this.reloadUpdatedPlugins(result.updatedPluginIds);
       } catch (e: unknown) {
-        progressNotice.hide();
+        failed = true;
+        progressNotice?.hide();
         console.error("Sync failed:", e);
-        new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
+        this.syncDiagnosticsLog.log("warn", `Sync failed: ${errorMessage(e)}`);
+        if (!silent) new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
       }
     } finally {
-      this.isSyncing = false;
-      if (this.syncQueuedWhileRunning) {
-        this.syncQueuedWhileRunning = false;
+      this.setSyncActivity(false, failed);
+      if (this.syncQueuedSilent !== null) {
+        const queuedSilent = this.syncQueuedSilent;
+        this.syncQueuedSilent = null;
         this.logDebug("Running the sync that was queued while the previous one was in progress");
-        void this.syncNow();
+        void this.syncNow(queuedSilent);
       }
     }
   }
 
-  private startAutoSync(): void {
-    if (this.autoSyncTimer) return;
-    const ms = this.settings.syncIntervalSeconds * 1000;
-    this.autoSyncTimer = window.setInterval(() => void this.syncNow(), ms);
-  }
+  // 2026-08 push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
+  // llm-wiki/03-*.md): applies exactly the one file a `push` notification named, instead of
+  // running a full syncNow()/Delta for every remote change no matter how much actually changed
+  // (matching real Obsidian Sync's per-file push). Shares syncNow()'s isSyncing/
+  // syncQueuedSilent mutex -- if a full sync is already running, this is skipped rather
+  // than risking two independent SyncClient instances writing the same path at once (writeSelfPath's
+  // selfWritePaths set is shared plugin-wide); the in-flight (or queued-right-after) full sync's
+  // own Delta will pick this exact file up anyway, since the server just told every connected
+  // device it changed.
+  private async applyPushedChange(file: PushedFileChangeMeta): Promise<void> {
+    if (this.isSyncing) {
+      this.logDebug(`Sync already in progress -- skipping direct apply of pushed change for ${file.path} (the in-flight/queued sync will pick it up)`);
+      return;
+    }
+    const token = await this.getToken();
+    if (!token) return;
 
-  private stopAutoSync(): void {
-    if (this.autoSyncTimer) {
-      window.clearInterval(this.autoSyncTimer);
-      this.autoSyncTimer = null;
+    this.setSyncActivity(true);
+    let failed = false;
+    try {
+      const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
+      const transport = await this.getTransport();
+      const client = new SyncClient(
+        transport,
+        this.app.vault,
+        this.app.fileManager,
+        pluginDir,
+        token,
+        { ...this.settings, e2eePassword: this.e2eePassword },
+        this.deletedFiles,
+        async (deleted) => {
+          this.deletedFiles = deleted;
+          await this.savePluginData();
+        },
+        this.contentHashCache,
+        undefined,
+        undefined,
+        this.selfWritePaths,
+        (level, message) => this.syncDiagnosticsLog.log(level, message),
+        this.lastSyncedHashStore
+      );
+      await client.applyPushedFileChange({
+        path: file.path,
+        modified_at_ms: file.modifiedAtMs,
+        size_bytes: file.sizeBytes,
+        content_hash: file.contentHash,
+        is_deleted: file.isDeleted,
+      });
+    } catch (e: unknown) {
+      failed = true;
+      console.error(`Failed to apply pushed change for ${file.path}:`, e);
+    } finally {
+      // Success doesn't pass `failed` here (see setSyncActivity's own comment) -- applying one
+      // pushed file cleanly says nothing about whether some other already-flagged sync failure
+      // is now resolved.
+      this.setSyncActivity(false, failed ? true : undefined);
+      if (this.syncQueuedSilent !== null) {
+        const queuedSilent = this.syncQueuedSilent;
+        this.syncQueuedSilent = null;
+        this.logDebug("Running the sync that was queued while a pushed change was being applied");
+        void this.syncNow(queuedSilent);
+      }
     }
   }
 
-  private restartAutoSync(): void {
-    this.stopAutoSync();
-    if (this.settings.autoSync) {
-      this.startAutoSync();
-    }
-  }
-
+  // Connect-once-configured, matching real Obsidian core Sync (confirmed via obsidian.asar
+  // analysis, #14_옵시디언싱크_정렬_구현계획.md): there's no separate opt-in flag for a
+  // persistent connection, no user-configurable sync interval, and no "sync on startup" toggle
+  // either -- as soon as a token exists, the plugin keeps one open for as long as it stays
+  // loaded, and waitForCloseOrSafetyNet()'s own periodic full sync (below) is what core's fixed
+  // 30s requestSync interval already covers, replacing the old opt-in autoSync timer entirely.
+  // The manual "Sync now" button/ribbon icon stays as a force-trigger -- not replaced by this.
   private startLiveUpdatesIfNeeded(): void {
-    if (this.liveUpdatesLoopRunning || !this.settings.liveUpdates) {
-      if (!this.settings.liveUpdates) this.setLiveConnectionState("disabled");
+    if (this.liveUpdatesLoopRunning || !this.hasStoredToken) {
+      if (!this.hasStoredToken) this.setLiveConnectionState("disabled");
       return;
     }
     this.liveUpdatesLoopRunning = true;
@@ -633,76 +855,118 @@ export default class SyncPlugin extends Plugin {
     this.settingTab.update();
   }
 
+  // The "resting" state once whatever's currently in flight (a connection attempt, an active
+  // sync) settles -- real Obsidian core Sync's own status model checks its persistent error flag
+  // BEFORE deciding "synced" (see liveStatus.ts's own comment for the exact precedence, taken
+  // straight from the shipped app), so a lingering sync failure keeps showing "error" through a
+  // connection drop/reconnect cycle instead of quietly reverting to "synced" just because the
+  // socket itself recovered.
+  private setIdleStatus(): void {
+    if (!this.hasStoredToken) {
+      this.setLiveConnectionState("disabled");
+      return;
+    }
+    this.setLiveConnectionState(this.lastSyncFailed ? "error" : "synced");
+  }
+
+  // Wraps every isSyncing mutation (previously a bare `this.isSyncing = ...`) so the status
+  // indicator reacts to actual sync activity, not just connection health -- matching real
+  // Obsidian core Sync's own status bar, which reflects sync operations in progress rather than
+  // socket state. `failed` (only meaningful when turning activity off) feeds lastSyncFailed,
+  // mirroring core's own persistent per-file error tracking closely enough for pumice's simpler
+  // model: true if this sync attempt threw entirely or finished with files still failing after
+  // in-sync retries, false (clearing any earlier failure) only on a fully clean sync.
+  // `failed` left undefined (rather than explicitly false) leaves lastSyncFailed untouched --
+  // used by applyPushedFileChange's own single-file apply below, whose success doesn't confirm
+  // some OTHER already-flagged failure from a prior full sync is actually resolved.
+  private setSyncActivity(active: boolean, failed?: boolean): void {
+    this.isSyncing = active;
+    if (active) {
+      this.setLiveConnectionState("syncing");
+      return;
+    }
+    if (failed !== undefined) this.lastSyncFailed = failed;
+    this.setIdleStatus();
+  }
+
+  // Real Obsidian core Sync's status bar is icon-only, with the detailed text as a hover
+  // tooltip (setTooltip) rather than inline -- confirmed via the shipped app's own
+  // _updateStatusBar(), see llm-wiki/12-*.md. The settings tab's "Connection status" line stays
+  // inline text (see its own comment for why: Obsidian mobile has no status bar by default).
   private renderLiveStatusBar(): void {
     if (!this.statusBarItemEl) return;
     this.statusBarItemEl.empty();
-    if (!this.settings.liveUpdates) return;
+    if (!this.hasStoredToken) return;
     const { icon, labelKey, labelFallback } = describeLiveStatus(this.liveConnectionState);
     this.statusBarItemEl.addClass("pumice-live-status");
-    setIcon(this.statusBarItemEl.createSpan(), icon);
-    this.statusBarItemEl.createSpan({ text: t(labelKey, labelFallback) });
+    setIcon(this.statusBarItemEl, icon);
+    setTooltip(this.statusBarItemEl, t(labelKey, labelFallback), { placement: "top" });
   }
 
-  // Opens GET /watch (a plain SSE connection, not gRPC-Web -- see #10_실시간_변경_알림_구현_계획.md)
-  // and triggers syncNow() whenever the server reports a change, instead of waiting for the next
-  // autoSync tick. Reconnects with exponential backoff on any error; exits cleanly once
-  // liveUpdates is turned off or the plugin unloads (checked at both loop levels, since a single
-  // connection can live for a long time between read() calls).
+  // Keeps the shared WS transport (see wsTransport field) connected for as long as a token stays
+  // configured, reconnecting with exponential backoff (+ jitter, see below) on any error.
+  // getTransport() itself does the actual connect + wires onChangePush()/starts the heartbeat --
+  // this loop's job is noticing a drop (via wsClosedPromise) and re-establishing it, and
+  // separately forcing a periodic sync as a safety net against a lost push notification (see
+  // waitForCloseOrSafetyNet()). Formerly a GET /watch SSE connection (see
+  // #10_실시간_변경_알림_구현_계획.md); replaced by the same WS connection
+  // syncNow()/testConnection() already use, per #11_websocket_동기화_프로토콜_설계.md.
   private async runLiveUpdateLoop(): Promise<void> {
     const INITIAL_BACKOFF_MS = 1000;
     const MAX_BACKOFF_MS = 60000;
     let backoffMs = INITIAL_BACKOFF_MS;
 
-    while (this.settings.liveUpdates && !this.unloading) {
+    while (this.hasStoredToken && !this.unloading) {
       try {
         this.setLiveConnectionState("connecting");
-        const token = await this.getToken();
-        if (!token) {
-          // Falls through to the catch block below instead of a silent sleep-and-continue --
-          // that used to leave the status stuck on "connecting" forever with nothing in the
-          // diagnostics log, indistinguishable from a slow-but-working connection attempt.
-          throw new Error(t("settings.msg-no-token", "No sync token is set."));
-        }
-
-        const client = await this.getSyncClient();
-        const vaultId = encodeURIComponent(this.app.vault.getName());
-        // requestUrl() can't do this: its response has no ReadableStream/incremental-read option,
-        // it hands back the complete body only once the whole response has arrived -- fundamentally
-        // incompatible with reading an SSE stream as it comes in. Raw fetch() is the only API that
-        // supports it (same reasoning as syncClient.ts's uploadFilesStreaming()). Routed through
-        // window (unknown-cast) rather than the bare global for the same reason as there: an
-        // eslint-comments/no-restricted-disable block forbids suppressing this rule via a disable
-        // comment outright, so this is what actually keeps the warning from firing.
-        const windowFetch = (window as unknown as { fetch: typeof fetch }).fetch;
-        const response = await windowFetch(`${client.getPublishHost()}/watch?vault_id=${vaultId}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!response.ok || !response.body) {
-          throw new Error(`/watch request failed: ${response.status}`);
-        }
-        this.setLiveConnectionState("connected");
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        while (this.settings.liveUpdates && !this.unloading) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const extracted = extractSseFrames(buffer);
-          buffer = extracted.remainder;
-          if (extracted.changed) void this.syncNow();
-        }
-
-        // The stream ended (server closed it, or we broke out above) rather than erroring --
-        // reconnect immediately at the base backoff instead of treating it like a failure.
+        await this.getTransport();
         backoffMs = INITIAL_BACKOFF_MS;
+
+        await this.waitForCloseOrSafetyNet();
       } catch (e: unknown) {
-        this.setLiveConnectionState("reconnecting");
-        this.logDebug(`Live update connection error, retrying in ${backoffMs}ms: ${errorMessage(e)}`);
-        await new Promise((resolve) => window.setTimeout(resolve, backoffMs));
+        this.setLiveConnectionState("connecting");
+        // Obsidian core's own reconnect backoff applies ±50% jitter to each attempt's delay
+        // (see #14_옵시디언싱크_정렬_구현계획.md) so many clients dropped by the same event (a
+        // server restart) don't all retry in lockstep -- backoffMs itself stays a clean
+        // doubling sequence; only the actual delay used here is jittered.
+        const delayMs = applyJitter(backoffMs);
+        // Vault sharing (see 14_vault_sharing_설계.md): a PERMISSION_DENIED init failure while
+        // sharedVaultOwner is set means the share is missing/revoked, not a transient network
+        // problem -- still retried with the same backoff as any other failure (nothing here
+        // guarantees the condition is permanent, e.g. the owner could re-invite), but the log
+        // says so plainly instead of just "connection error" so it isn't mistaken for one.
+        const deniedSharedVault =
+          e instanceof WsTransportError && e.code === "PERMISSION_DENIED" && this.settings.sharedVaultOwner;
+        const detail = deniedSharedVault
+          ? `no access to ${this.settings.sharedVaultOwner}'s shared vault -- check the invite or your account's email`
+          : errorMessage(e);
+        this.logDebug(`Live update connection error, retrying in ${Math.round(delayMs)}ms: ${detail}`);
+        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
         backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
       }
+    }
+  }
+
+  // Waits until the current live connection drops, but doesn't just sleep -- every
+  // LIVE_SYNC_SAFETY_NET_INTERVAL_MS while it stays up, forces a full sync regardless of
+  // whether a push notification actually arrived. Mirrors Obsidian core's own Sync client
+  // (`window.setInterval(this.requestSync.bind(this), 3e4)`, confirmed via obsidian.asar
+  // v1.13.6 -- see #14_옵시디언싱크_정렬_구현계획.md): without this, a lost/dropped push would go
+  // unnoticed until the next manual sync -- this *is* pumice's periodic-resync mechanism now
+  // (the old opt-in autoSync timer was removed, see settings.ts). Runs a full syncNow() rather
+  // than a cheaper incremental catch-up because pumice has no version-journal endpoint yet (see
+  // #14's "저널 기반" section) -- this'll get cheaper once that lands.
+  private async waitForCloseOrSafetyNet(): Promise<void> {
+    while (this.wsClosedPromise) {
+      const closedPromise = this.wsClosedPromise;
+      const timedOut = Symbol("safety-net-timeout");
+      const winner = await Promise.race([
+        closedPromise.then(() => "closed" as const),
+        new Promise<typeof timedOut>((resolve) => window.setTimeout(() => resolve(timedOut), LIVE_SYNC_SAFETY_NET_INTERVAL_MS)),
+      ]);
+      if (winner === "closed") return;
+      this.logDebug("Live sync safety net: forcing a sync regardless of push activity");
+      void this.syncNow(true);
     }
   }
 
@@ -754,14 +1018,18 @@ export default class SyncPlugin extends Plugin {
   }
 
   triggerDebouncedSync(): void {
-    if (!this.settings.autoSync) return;
+    // Guards on a token being configured at all, not a removed "autoSync" opt-in flag -- prompt
+    // upload of local edits is always on now (matching real Obsidian core, see
+    // startLiveUpdatesIfNeeded's own comment), this just avoids spamming a "No sync token is
+    // set" notice on every edit before the user has ever logged in.
+    if (!this.hasStoredToken) return;
 
     if (this.debounceTimer) {
       window.clearTimeout(this.debounceTimer);
     }
 
     this.debounceTimer = window.setTimeout(() => {
-      void this.syncNow();
+      void this.syncNow(true);
     }, 3000); // run after a 3-second debounce delay
   }
 

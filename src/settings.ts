@@ -1,7 +1,12 @@
 import { Platform } from "obsidian";
 import { pickDefaultDeviceName } from "./deviceName";
 
-export type ConflictResolution = "server-wins" | "client-wins" | "manual" | "merge";
+// Text files (isTextFilePath() in textFileTypes.ts) always attempt a 3-way merge first,
+// unconditionally -- this setting only decides which side wins for everything else: non-text
+// files, or a text file with no earlier synced version to merge against (see
+// syncClient.ts's downloadFileBatch()). "manual"/"merge" existed as two more values here until
+// this was simplified; both migrate to "server-wins" on load (see main.ts's loadSettings()).
+export type ConflictResolution = "server-wins" | "client-wins";
 
 // require()'s Node "os" module must stay lexically inside this Platform.isDesktop check for
 // eslint-plugin-obsidianmd's no-nodejs-modules rule -- Node built-ins don't exist at all on
@@ -28,6 +33,14 @@ export interface SyncPluginSettings {
   deviceName: string;
   userName: string;
 
+  // "" (default) = this vault is my own. Non-empty = sync against that account's vault
+  // instead, using this local folder's name as the vault_id -- requires an accepted (or
+  // pending, since sharing is binary access with no role gate) share from that account.
+  // See 14_vault_sharing_설계.md -- pumice has no vault picker, so this is the only way to
+  // point a local vault at someone else's, and the local folder name still has to match the
+  // owner's vault_id exactly, same as pumice's existing self-owned convention.
+  sharedVaultOwner: string;
+
   syncFiles: boolean;
   syncBookmarks: boolean;
   // .obsidian/plugins/** (code, manifest, assets) + community-plugins.json (the enabled list).
@@ -38,15 +51,6 @@ export interface SyncPluginSettings {
   // plugin folder that commonly holds secrets (API tokens etc.) in plaintext.
   syncPluginData: boolean;
   ignorePatterns: string;
-
-  autoSync: boolean;
-  syncIntervalSeconds: number;
-  syncOnStartup: boolean;
-  // Opens a long-lived SSE connection (GET /watch) so the server can push "something changed"
-  // instead of waiting for the next autoSync tick -- see #10_실시간_변경_알림_구현_계획.md. Off by
-  // default like syncPlugins: a new persistent-connection behavior, not just a config tweak.
-  // Doesn't replace autoSync, which stays meaningful as a fallback if this connection dies quietly.
-  liveUpdates: boolean;
 
   conflictResolution: ConflictResolution;
 
@@ -80,18 +84,15 @@ export function getDefaultSettings(configDir: string): SyncPluginSettings {
     deviceName: resolveDefaultDeviceName(),
     userName: "Obsidian User",
 
+    sharedVaultOwner: "",
+
     syncFiles: true,
     syncBookmarks: true,
     syncPlugins: false,
     syncPluginData: false,
     ignorePatterns: defaultExcludePatterns,
 
-    autoSync: false,
-    syncIntervalSeconds: 60,
-    syncOnStartup: false,
-    liveUpdates: false,
-
-    conflictResolution: "merge",
+    conflictResolution: "server-wins",
 
     enableE2EE: false,
 
