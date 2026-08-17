@@ -18,14 +18,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: 20
-
-      # Still on Node 20 upstream as of v3.0.0; bump once arduino/setup-protoc ships a Node 24 build.
-      - uses: arduino/setup-protoc@v3
-        with:
-          # arduino/setup-protoc versions track the protobuf release tag (e.g. "21.12"),
-          # which reports itself as protoc 3.21.12 (the version this project is verified with).
-          version: "21.12"
+          node-version: 24
 
       - name: Check tag matches manifest.json version
         run: |
