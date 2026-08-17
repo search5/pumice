@@ -4,6 +4,13 @@ main.js
 # feedback_never_git_add_dash_a memory: llm-wiki was previously committed by mistake and had to
 # be purged from pushed history).
 llm-wiki/
+# Root-level numbered design/planning docs (e.g. 14_vault_sharing_설계.md, #4_구현_계획.md) --
+# same rule as llm-wiki/ above: local-only, never committed. Docs 14-48 were committed by
+# mistake over many past sessions and had to be purged from history (2026-08-17). They now
+# live in llm-wiki/pumice-design-docs/ (already covered by the llm-wiki/ rule above) -- these
+# two patterns are just a safety net in case one gets created at the root again.
+/#*.md
+/[0-9]*_*.md
 git-force-refetch-feature-websocket.txt
 docs/_build/
 docs/locale/*/LC_MESSAGES/*.mo
