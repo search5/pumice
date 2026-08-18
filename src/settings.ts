@@ -13,12 +13,17 @@ export type ConflictResolution = "server-wins" | "client-wins";
 // mobile (Capacitor). pickDefaultDeviceName() (deviceName.ts) is the actual tested decision
 // logic; this is just the OS-facing wrapper around it, so it's left to manual verification
 // instead (see #9_북마크_강제병합_및_기본값_개선_구현_계획.md 3-2절).
+// Cast require itself (rather than its return value via `typeof import("os")`) to a minimal,
+// self-contained shape -- this must not depend on @types/node's ambient NodeRequire/os typings
+// actually resolving, since environments that only install "dependencies" (not devDependencies,
+// where both @types/node and "obsidian" itself live) won't have them, silently turning require --
+// and everything chained off its result -- into `any`.
+type NodeOsRequire = (id: "os") => { hostname(): string };
+
 function resolveDefaultDeviceName(): string {
   if (Platform.isDesktop) {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports -- Platform.isDesktop-guarded require(), the pattern eslint-plugin-obsidianmd's own no-nodejs-modules rule expects
-      const os = require("os") as typeof import("os");
-      const hostname = os.hostname();
+      const hostname = (require as NodeOsRequire)("os").hostname();
       return pickDefaultDeviceName(hostname);
     } catch {
       return pickDefaultDeviceName(undefined);
