@@ -1,11 +1,12 @@
-import { App, ButtonComponent, Modal, Notice, moment } from "obsidian";
+import { App, ButtonComponent, Modal, Notice } from "obsidian";
 import type SyncPlugin from "./main";
 import type { SyncLogEntry } from "./syncDiagnosticsLog";
 import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
+import { toMoment } from "./momentUtil";
 
 function formatLine(entry: SyncLogEntry): string {
-  return `[${moment(entry.ts).format("YYYY-MM-DD HH:mm:ss")}] ${entry.level.toUpperCase()} ${entry.message}`;
+  return `[${toMoment(entry.ts).format("YYYY-MM-DD HH:mm:ss")}] ${entry.level.toUpperCase()} ${entry.message}`;
 }
 
 export class SyncDiagnosticsModal extends Modal {
@@ -70,7 +71,7 @@ export class SyncDiagnosticsModal extends Modal {
     // Newest first -- entries themselves are stored oldest-first (append order).
     for (const entry of [...entries].reverse()) {
       const row = listEl.createDiv({ cls: `grpc-sync-diagnostics-row grpc-sync-diagnostics-row-${entry.level}` });
-      row.createSpan({ cls: "grpc-sync-diagnostics-time", text: moment(entry.ts).format("YYYY-MM-DD HH:mm:ss") });
+      row.createSpan({ cls: "grpc-sync-diagnostics-time", text: toMoment(entry.ts).format("YYYY-MM-DD HH:mm:ss") });
       row.createSpan({ cls: "grpc-sync-diagnostics-level", text: entry.level.toUpperCase() });
       row.createSpan({ cls: "grpc-sync-diagnostics-message", text: entry.message });
     }

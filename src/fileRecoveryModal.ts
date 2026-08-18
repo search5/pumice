@@ -1,4 +1,5 @@
-import { AbstractInputSuggest, App, ButtonComponent, Modal, Notice, Platform, Setting, TFile, moment, setIcon, setTooltip } from "obsidian";
+import { AbstractInputSuggest, App, ButtonComponent, Modal, Notice, Platform, Setting, TFile, setIcon, setTooltip } from "obsidian";
+import { toMoment } from "./momentUtil";
 import type SyncPlugin from "./main";
 import type { LocalSnapshot } from "./localSnapshotStore";
 import { t } from "./i18n";
@@ -269,7 +270,7 @@ export class LocalSnapshotModal extends Modal {
 
   private renderCard(snapshot: LocalSnapshot, index: number): void {
     const cardEl = this.listEl.createDiv("grpc-history-card");
-    const detailsEl = cardEl.createDiv({ cls: "grpc-history-item-details", text: moment(snapshot.ts).format("llll") });
+    const detailsEl = cardEl.createDiv({ cls: "grpc-history-item-details", text: toMoment(snapshot.ts).format("llll") });
     detailsEl.createDiv({ cls: "u-small u-muted", text: humanFileSize(snapshot.data.length) });
 
     if (this.isDesktop) {
@@ -303,7 +304,7 @@ export class LocalSnapshotModal extends Modal {
       const cardEl = this.cardEls[index] ?? null;
       cardEl?.addClass("is-active");
       this.activeCardEl = cardEl;
-      this.timestampEl.setText(moment(this.snapshots[index].ts).format("llll"));
+      this.timestampEl.setText(toMoment(this.snapshots[index].ts).format("llll"));
     } else {
       this.renderMobileHeader();
     }
@@ -341,7 +342,7 @@ export class LocalSnapshotModal extends Modal {
     headerEl.createDiv({ cls: "grpc-preview-filename", text: basenameOf(this.currentPath) });
     headerEl.createDiv({
       cls: "grpc-preview-timestamp u-muted",
-      text: moment(this.snapshots[this.currentIndex].ts).format("llll"),
+      text: toMoment(this.snapshots[this.currentIndex].ts).format("llll"),
     });
   }
 
@@ -401,7 +402,7 @@ export class LocalSnapshotModal extends Modal {
       await this.plugin.snapshotStore.forceAdd(snapshot.path, snapshot.data);
       new Notice(
         t("plugins.sync.msg-restored-version", "Successfully restored the version from {{time}}.", {
-          time: moment(snapshot.ts).fromNow(),
+          time: toMoment(snapshot.ts).fromNow(),
         })
       );
       // Refresh the list and show the snapshot we just restored (the most recent one) again.

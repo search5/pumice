@@ -1,4 +1,5 @@
-import { App, ButtonComponent, Component, MarkdownRenderer, Modal, Notice, Platform, TFile, moment, setIcon, setTooltip } from "obsidian";
+import { App, ButtonComponent, Component, MarkdownRenderer, Modal, Notice, Platform, TFile, setIcon, setTooltip } from "obsidian";
+import { toMoment } from "./momentUtil";
 import SyncPlugin from "./main";
 import { t } from "./i18n";
 import { renderDiff } from "./diffView";
@@ -68,7 +69,7 @@ function groupHistoryItems(items: HistoryVersion[]): HistoryVersion[][] {
 
     const anchor = current[0];
     const breaksGroup =
-      item.deleted || !!item.related_path || !moment(anchor.modified_at_ms).isSame(item.modified_at_ms, "day");
+      item.deleted || !!item.related_path || !toMoment(anchor.modified_at_ms).isSame(item.modified_at_ms, "day");
     const withinGroup =
       !breaksGroup &&
       anchor.device_name === item.device_name &&
@@ -344,7 +345,7 @@ export class SyncHistoryModal extends Modal {
   }
 
   private formatTimestamp(ts: number): string {
-    return ts + 86400000 < Date.now() ? moment(ts).format("llll") : moment(ts).fromNow();
+    return ts + 86400000 < Date.now() ? toMoment(ts).format("llll") : toMoment(ts).fromNow();
   }
 
   // Description shown on a group's card — judged from the group's anchor (most recent item). A
@@ -406,7 +407,7 @@ export class SyncHistoryModal extends Modal {
         if (itemIndex === 0) return;
         const subEl = subListEl.createDiv({
           cls: "grpc-history-group-item",
-          text: moment(item.modified_at_ms).format("LT"),
+          text: toMoment(item.modified_at_ms).format("LT"),
         });
         subEl.addEventListener("click", (evt) => {
           evt.stopPropagation();
@@ -691,7 +692,7 @@ export class SyncHistoryModal extends Modal {
         .then((client) => client.restoreHistoryVersion(version.history_id, this.file.path));
       new Notice(
         t("plugins.sync.msg-restored-version", "Successfully restored the version from {{time}}.", {
-          time: moment(version.modified_at_ms).fromNow(),
+          time: toMoment(version.modified_at_ms).fromNow(),
         })
       );
       void restoredPath;

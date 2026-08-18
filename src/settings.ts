@@ -17,7 +17,8 @@ function resolveDefaultDeviceName(): string {
   if (Platform.isDesktop) {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports -- Platform.isDesktop-guarded require(), the pattern eslint-plugin-obsidianmd's own no-nodejs-modules rule expects
-      const hostname = (require("os") as typeof import("os")).hostname();
+      const os = require("os") as typeof import("os");
+      const hostname = os.hostname();
       return pickDefaultDeviceName(hostname);
     } catch {
       return pickDefaultDeviceName(undefined);
