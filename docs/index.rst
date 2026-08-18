@@ -2,9 +2,9 @@ Pumice documentation
 =====================
 
 An `Obsidian <https://obsidian.md>`_ community plugin that syncs your vault with a
-self-hosted gRPC server (`pumice-server <https://github.com/search5/pumice-server>`_ —
-required, run it yourself). The goal is to sync instantly, no matter how many files
-are in the vault.
+self-hosted server (`pumice-server <https://github.com/search5/pumice-server>`_ —
+required, run it yourself) over a single persistent WebSocket connection. The goal
+is to sync instantly, no matter how many files are in the vault.
 
 Beyond plain file sync, Pumice also gives you full version history with restore,
 automatic local snapshots as a safety net between syncs, and selective publishing of

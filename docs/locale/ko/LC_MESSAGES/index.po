@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: Pumice 0.0.17\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-07-25 00:55+0900\n"
+"POT-Creation-Date: 2026-08-19 00:59+0900\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: ko\n"
@@ -22,24 +22,24 @@ msgstr ""
 msgid "Contents"
 msgstr "목차"
 
-#: ../../index.rst:2 a7c209562bf840a29f4d7fdc2c72caf0
+#: ../../index.rst:2 b06e48933fdd4bcd9964eb490d3949db
 msgid "Pumice documentation"
 msgstr "Pumice 문서"
 
-#: ../../index.rst:4 a210746bc477404eabf31b3690c3ae31
+#: ../../index.rst:4 1af064dd78704695bd229ab153dc49da
 msgid ""
 "An `Obsidian <https://obsidian.md>`_ community plugin that syncs your "
-"vault with a self-hosted gRPC server (`pumice-server "
-"<https://github.com/search5/pumice-server>`_ — required, run it "
-"yourself). The goal is to sync instantly, no matter how many files are in"
-" the vault."
+"vault with a self-hosted server (`pumice-server "
+"<https://github.com/search5/pumice-server>`_ — required, run it yourself)"
+" over a single persistent WebSocket connection. The goal is to sync "
+"instantly, no matter how many files are in the vault."
 msgstr ""
-"자체 호스팅 gRPC 서버(`pumice-server "
+"단일 상시 연결 WebSocket으로 자체 호스팅 서버(`pumice-server "
 "<https://github.com/search5/pumice-server>`_ — 필수, 직접 실행해야 함)와 "
-"vault를 동기화하는 `옵시디언 <https://obsidian.md>`_ 커뮤니티 플러그인입니다. "
-"목표는 vault에 파일이 얼마나 많든 즉시 동기화되는 것입니다."
+"vault를 동기화하는 `옵시디언 <https://obsidian.md>`_ "
+"커뮤니티 플러그인입니다. 목표는 vault에 파일이 얼마나 많든 즉시 동기화되는 것입니다."
 
-#: ../../index.rst:9 d44347aa06874ad2b2f27f15a11504b4
+#: ../../index.rst:9 fb8a3ff37879483189389079117ed746
 msgid ""
 "Beyond plain file sync, Pumice also gives you full version history with "
 "restore, automatic local snapshots as a safety net between syncs, and "
@@ -47,19 +47,19 @@ msgid ""
 "talking to the same server, under your own control, with no third-party "
 "service in the loop."
 msgstr ""
-"단순 파일 동기화를 넘어, Pumice는 복원 가능한 전체 버전 히스토리, 동기화 "
-"사이사이를 지켜주는 자동 로컬 스냅샷, 선택한 노트/폴더를 자체 호스팅 "
-"사이트에 선택적으로 게재하는 기능까지 제공합니다 — 전부 같은 서버와 "
-"통신하며, 서드파티 서비스 없이 온전히 여러분이 직접 통제합니다."
+"단순 파일 동기화를 넘어, Pumice는 복원 가능한 전체 버전 히스토리, 동기화 사이사이를 지켜주는 자동 로컬 스냅샷, 선택한 "
+"노트/폴더를 자체 호스팅 사이트에 선택적으로 게재하는 기능까지 제공합니다 — 전부 같은 서버와 통신하며, 서드파티 서비스 없이 "
+"온전히 여러분이 직접 통제합니다."
 
-#: ../../index.rst:27 bbca674bf0ed41ce95ab33bc6d09ded4
+#: ../../index.rst:27 0ae6f14b17024875bd7376ce50003162
 msgid "Indices and tables"
 msgstr "색인 및 표"
 
-#: ../../index.rst:29 5b937f9fdc344755aa7ee32c6e27faf2
+#: ../../index.rst:29 0d1e37cfbcc5486a825defe0b42bd35e
 msgid ":ref:`genindex`"
 msgstr ":ref:`genindex`"
 
-#: ../../index.rst:30 33a98e098cb74c349331b7bbddb0c024
+#: ../../index.rst:30 749ddb7aaede4b5ba4ee2adce342106e
 msgid ":ref:`search`"
 msgstr ":ref:`search`"
+
