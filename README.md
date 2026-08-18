@@ -23,7 +23,16 @@ Key features:
 - Vault file sync (delta comparison, only changed files are uploaded/downloaded)
 - Sync history browsing and file recovery (`syncHistoryModal`, `fileRecoveryModal`)
 - Automatic local snapshots with retention (`localSnapshotStore`)
-- Selective publishing of chosen folders (`publishModal`)
+- Selective publishing of chosen folders (`publishModal`), including custom domain, navigation,
+  and appearance options for the published site
+- Site collaboration — publish to a site owned by another account once they've accepted you as a
+  collaborator (`Publish a shared site…` command, `sharedSitePickerModal`)
+- Vault sharing — sync your own vault against another account's instead of your own
+  (`sharedVaultOwner` setting), or manage who can sync against yours (`vaultShareModal`)
+- Community plugin sync — optionally sync installed plugins' code and/or their own `data.json`
+  (`syncPlugins` / `syncPluginData`, both off by default)
+- Sync diagnostics log for troubleshooting skipped/queued syncs (`Open sync diagnostics log`
+  command, `syncDiagnosticsModal`)
 - Localization support (Korean/English, `src/locales`)
 
 ## Requirements
@@ -109,8 +118,9 @@ vault on every reconnect.
 | serverHost | localhost | Pumice server address |
 | serverPort | 8080 | HTTP + WebSocket port |
 | useTls | false | Use TLS (recommended for remote servers) |
-| deviceName | Obsidian Client | Name identifying this device |
+| deviceName | OS hostname (desktop) or "Obsidian Client" | Name identifying this device |
 | userName | Obsidian User | User name |
+| sharedVaultOwner | (empty) | If set, sync against that account's vault instead of your own — requires an accepted share from that account, and this vault's folder name must match their vault ID exactly |
 | syncFiles | true | Whether to sync files |
 | syncBookmarks | true | Whether to include bookmarks (`.obsidian/bookmarks.json`) |
 | syncPlugins | false | Sync installed community plugins' code/manifest (off by default — this syncs executable code, a bigger trust boundary than note content) |
@@ -151,21 +161,35 @@ pumice/
 │   ├── main.ts                    # Plugin entry point; owns the live connection lifecycle
 │   ├── settings.ts                # Settings types and defaults
 │   ├── settingsTab.ts             # Settings panel UI
+│   ├── settingsTabConnection.ts   # Which setting changes require dropping/rebuilding the WS
+│   ├── settingsTabKeyboard.ts     # Works around core's Tab-as-navigation keydown handler
 │   ├── syncClient.ts              # Sync orchestration (scan/E2EE/conflict-resolution/hashing)
 │   ├── syncTransport.ts           # Transport-agnostic interface syncClient.ts talks to
 │   ├── wsTransport.ts             # WebSocket protocol layer (framing, heartbeat, reconnect)
 │   ├── wsSyncTransportAdapter.ts  # Adapts wsTransport.ts to the syncTransport.ts interface
 │   ├── liveUpdates.ts, liveStatus.ts  # Reconnect backoff; status bar icon/state model
+│   ├── batching.ts                # Splits path lists into byte-size + file-count bounded batches
+│   ├── concurrency.ts             # mapWithConcurrency / streamWithConcurrency helpers
+│   ├── contentHashCache.ts        # Persists per-file content hashes (mtime+size keyed)
+│   ├── lastSyncedHashStore.ts     # Per-path "base" hash the 3-way merge diffs against
+│   ├── textFileTypes.ts           # Shared text-file classification (merge/diff eligibility)
 │   ├── syncHistoryModal.ts        # Sync history UI
 │   ├── fileRecoveryModal.ts       # File recovery UI
-│   ├── publishModal.ts            # Selective publish UI
 │   ├── localSnapshotStore.ts      # Local snapshot management
-│   ├── contentHashCache.ts        # Persists per-file content hashes (mtime+size keyed)
-│   ├── concurrency.ts             # mapWithConcurrency / streamWithConcurrency helpers
 │   ├── diffView.ts                # File diff view
+│   ├── syncDiagnosticsLog.ts, syncDiagnosticsModal.ts  # In-memory sync log + its viewer UI
+│   ├── publishModal.ts            # Selective publish UI (folders, site options, custom domain)
+│   ├── publishEligibility.ts      # Pure "should this file be published" decision logic
+│   ├── navigationOrdering.ts      # Customize-sidebar drag/reorder logic for published sites
+│   ├── siteCollaboration.ts, sharedSitePickerModal.ts  # Publish to a site owned by another account
+│   ├── vaultShareModal.ts         # Owner-side "Manage sharing" UI for vault sync sharing
+│   ├── pluginSync.ts              # .obsidian/plugins/** sync logic (opt-in)
+│   ├── pluginReload.ts            # Hot-reloads community plugins after sync pulls new code
 │   ├── swipeNavigation.ts         # Mobile swipe navigation
 │   ├── tokenStore.ts              # Auth token storage (App#secretStorage)
+│   ├── deviceName.ts              # Default device name decision (OS hostname fallback)
 │   ├── errorMessage.ts            # Error-to-string helper
+│   ├── momentUtil.ts              # Typed wrapper around obsidian's locale-aware moment instance
 │   └── i18n.ts, locales/          # Localization strings
 ├── scripts/
 │   └── version-bump.mjs           # Syncs manifest.json/versions.json, run by `npm version`

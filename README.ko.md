@@ -23,7 +23,15 @@
 - Vault 파일 동기화(델타 비교, 변경된 파일만 업로드/다운로드)
 - 동기화 히스토리 탐색 및 파일 복구(`syncHistoryModal`, `fileRecoveryModal`)
 - 보관 기간이 있는 자동 로컬 스냅샷(`localSnapshotStore`)
-- 선택한 폴더의 선택적 게재(`publishModal`)
+- 선택한 폴더의 선택적 게재(`publishModal`) — 커스텀 도메인, 내비게이션, 외형 옵션 포함
+- Site collaboration — 다른 계정이 협업자로 승인해준 사이트에 게재(`공유 사이트 게재…` 명령,
+  `sharedSitePickerModal`)
+- Vault 공유 — 내 vault를 다른 계정의 vault에 맞춰 동기화하거나(`sharedVaultOwner` 설정), 누가
+  내 vault를 동기화할 수 있는지 관리(`vaultShareModal`)
+- 커뮤니티 플러그인 동기화 — 설치된 플러그인의 코드/`data.json`을 선택적으로 동기화
+  (`syncPlugins` / `syncPluginData`, 둘 다 기본 꺼짐)
+- 건너뛴/대기 중인 동기화를 확인하기 위한 동기화 진단 로그(`동기화 진단 로그 열기` 명령,
+  `syncDiagnosticsModal`)
 - 로컬라이제이션 지원(한국어/영어, `src/locales`)
 
 ## 요구 사항
@@ -106,8 +114,9 @@ WebSocket 연결을 하나 계속 열어둡니다 — 옵시디언 공식 Sync�
 | serverHost | localhost | Pumice 서버 주소 |
 | serverPort | 8080 | HTTP + WebSocket 포트 |
 | useTls | false | TLS 사용(원격 서버라면 권장) |
-| deviceName | Obsidian Client | 이 기기를 식별하는 이름 |
+| deviceName | OS 호스트명(데스크톱) 또는 "Obsidian Client" | 이 기기를 식별하는 이름 |
 | userName | Obsidian User | 사용자 이름 |
+| sharedVaultOwner | (비어 있음) | 설정하면 내 vault 대신 그 계정의 vault와 동기화 — 해당 계정이 공유를 승인해야 하고, 이 vault의 폴더 이름이 그 계정의 vault ID와 정확히 일치해야 함 |
 | syncFiles | true | 파일 동기화 여부 |
 | syncBookmarks | true | 북마크 포함 여부(`.obsidian/bookmarks.json`) |
 | syncPlugins | false | 설치된 커뮤니티 플러그인의 코드/매니페스트 동기화(기본 꺼짐 — 노트 내용보다 신뢰 범위가 큰 실행 코드라서) |
@@ -148,21 +157,35 @@ pumice/
 │   ├── main.ts                    # 플러그인 진입점, 상시 연결 생명주기 관리
 │   ├── settings.ts                # 설정 타입과 기본값
 │   ├── settingsTab.ts             # 설정 패널 UI
+│   ├── settingsTabConnection.ts   # 어떤 설정 변경이 WS 연결을 끊고 다시 만들어야 하는지 판단
+│   ├── settingsTabKeyboard.ts     # 코어의 Tab 내비게이션 keydown 핸들러 우회
 │   ├── syncClient.ts              # 동기화 오케스트레이션(스캔/E2EE/충돌 해결/해싱)
 │   ├── syncTransport.ts           # syncClient.ts가 사용하는 전송 방식 무관 인터페이스
 │   ├── wsTransport.ts             # WebSocket 프로토콜 계층(프레이밍/하트비트/재연결)
 │   ├── wsSyncTransportAdapter.ts  # wsTransport.ts를 syncTransport.ts 인터페이스에 맞춤
 │   ├── liveUpdates.ts, liveStatus.ts  # 재연결 백오프, 상태바 아이콘/상태 모델
+│   ├── batching.ts                # 경로 목록을 바이트 크기+파일 수 기준으로 배치 분할
+│   ├── concurrency.ts             # mapWithConcurrency / streamWithConcurrency 헬퍼
+│   ├── contentHashCache.ts        # 파일별 콘텐츠 해시 저장(mtime+size 키)
+│   ├── lastSyncedHashStore.ts     # 3-way 병합이 기준으로 삼는 경로별 "base" 해시
+│   ├── textFileTypes.ts           # 텍스트 파일 판별 공용 로직(병합/diff 대상 여부)
 │   ├── syncHistoryModal.ts        # 동기화 히스토리 UI
 │   ├── fileRecoveryModal.ts       # 파일 복구 UI
-│   ├── publishModal.ts            # 선택적 게재 UI
 │   ├── localSnapshotStore.ts      # 로컬 스냅샷 관리
-│   ├── contentHashCache.ts        # 파일별 콘텐츠 해시 저장(mtime+size 키)
-│   ├── concurrency.ts             # mapWithConcurrency / streamWithConcurrency 헬퍼
 │   ├── diffView.ts                # 파일 diff 뷰
+│   ├── syncDiagnosticsLog.ts, syncDiagnosticsModal.ts  # 인메모리 동기화 로그 + 조회 UI
+│   ├── publishModal.ts            # 선택적 게재 UI(폴더, 사이트 옵션, 커스텀 도메인)
+│   ├── publishEligibility.ts      # "이 파일을 게재해야 하는가" 순수 판단 로직
+│   ├── navigationOrdering.ts      # 게재된 사이트의 Customize sidebar 드래그 정렬 로직
+│   ├── siteCollaboration.ts, sharedSitePickerModal.ts  # 다른 계정 소유 사이트에 게재
+│   ├── vaultShareModal.ts         # vault 동기화 공유용 소유자 전용 "공유 관리" UI
+│   ├── pluginSync.ts              # .obsidian/plugins/** 동기화 로직(선택적)
+│   ├── pluginReload.ts            # 동기화로 새 코드가 내려온 후 커뮤니티 플러그인 핫리로드
 │   ├── swipeNavigation.ts         # 모바일 스와이프 내비게이션
 │   ├── tokenStore.ts              # 인증 토큰 저장(App#secretStorage)
+│   ├── deviceName.ts              # 기본 기기 이름 결정(OS 호스트명 폴백)
 │   ├── errorMessage.ts            # 에러를 문자열로 변환하는 헬퍼
+│   ├── momentUtil.ts              # 옵시디언의 로케일 인식 moment 인스턴스를 감싼 타입 헬퍼
 │   └── i18n.ts, locales/          # 로컬라이제이션 문자열
 ├── scripts/
 │   └── version-bump.mjs           # manifest.json/versions.json 동기화, `npm version`에서 실행
