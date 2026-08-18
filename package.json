@@ -1,6 +1,6 @@
 {
   "name": "pumice",
-  "version": "0.0.35",
+  "version": "0.0.36",
   "description": "Sync, version, publish, and share your vault over your own self-hosted server.",
   "main": "main.js",
   "author": "Ji-ho Lee <search5@gmail.com>",
