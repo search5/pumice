@@ -3,6 +3,7 @@ import { merge as mergeDiff3 } from "node-diff3";
 import { ContentHashCache } from "./contentHashCache";
 import type { LastSyncedHashStore } from "./lastSyncedHashStore";
 import { isTextFilePath } from "./textFileTypes";
+import { isMergeableConfigJson, mergeConfigJson } from "./jsonConfigMerge";
 import { mapWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
@@ -616,6 +617,11 @@ export class SyncClient {
       const baseText = decoder.decode(baseData);
       const localText = decoder.decode(localData);
       const remoteText = decoder.decode(remotePlainData);
+
+      if (isMergeableConfigJson(path)) {
+        const semantic = mergeConfigJson(baseText, localText, remoteText);
+        if (semantic !== null) return { mergedText: semantic, hasConflictMarkers: false };
+      }
 
       const { conflict, result } = mergeDiff3(localText, baseText, remoteText, {
         stringSeparator: "\n",
