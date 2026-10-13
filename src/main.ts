@@ -148,7 +148,6 @@ export default class SyncPlugin extends Plugin {
   // Lets runLiveUpdateLoop await "this connection dropped" instead of polling -- resolved by
   // the onClose handler set up alongside wsTransport in getTransport().
   private wsClosedPromise: Promise<void> | null = null;
-  private wsClosedResolve: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -360,6 +359,19 @@ export default class SyncPlugin extends Plugin {
     this.statusBarItemEl = this.addStatusBarItem();
     this.startLiveUpdatesIfNeeded();
 
+    // The OS knows the network changed long before a half-open socket reveals it. "offline":
+    // drop the (necessarily dead) connection now so in-flight requests fail fast instead of
+    // waiting out their 60s timeout. "online": whatever socket survived a sleep/roam is
+    // suspect, so replace it -- the live loop reconnects and syncs immediately.
+    this.registerDomEvent(window, "offline", () => {
+      this.logDebug("Network went offline -- dropping the live connection");
+      this.wsTransport?.close();
+    });
+    this.registerDomEvent(window, "online", () => {
+      this.logDebug("Network is back online -- re-establishing the live connection");
+      this.wsTransport?.close();
+    });
+
     // Folder context menu — toggles publish "included folder" status. Core Publish itself has no
     // folder right-click menu at all (reverse-engineered from obsidian.asar: the file-menu handler
     // is gated to TFile instances only, and there's no files-menu registration either) — we reuse
@@ -466,19 +478,26 @@ export default class SyncPlugin extends Plugin {
         this.lastKnownChangeId = payload.latestChangeId;
         void this.savePluginData();
       });
+      // Per-connection locals, not the shared fields: a late onClose from an OLDER socket (e.g.
+      // one torn down by disconnectTransport()) must not clear the heartbeat timer or resolve the
+      // closed-promise that now belong to a newer connection -- that left the new connection with
+      // no half-open detection, or made runLiveUpdateLoop() spin on an already-resolved promise.
+      let closedResolve: () => void = () => {};
+      const closedPromise = new Promise<void>((resolve) => (closedResolve = resolve));
+      let heartbeatTimer: number | null = null;
       ws.onClose(() => {
         if (this.wsTransport === ws) this.wsTransport = null;
-        if (this.wsHeartbeatTimer !== null) {
-          window.clearInterval(this.wsHeartbeatTimer);
-          this.wsHeartbeatTimer = null;
+        if (heartbeatTimer !== null) {
+          window.clearInterval(heartbeatTimer);
+          if (this.wsHeartbeatTimer === heartbeatTimer) this.wsHeartbeatTimer = null;
+          heartbeatTimer = null;
         }
         // Real core doesn't visually distinguish "reconnecting" from a fresh connection attempt
         // either -- both just show its "syncing" state with a "Connecting to server" tooltip.
         this.setLiveConnectionState(this.hasStoredToken ? "connecting" : "disabled");
-        this.wsClosedResolve?.();
-        this.wsClosedResolve = null;
+        closedResolve();
       });
-      this.wsClosedPromise = new Promise((resolve) => (this.wsClosedResolve = resolve));
+      this.wsClosedPromise = closedPromise;
       // Started *before* awaiting connect(), not after -- otherwise a server that never answers
       // init (a dropped frame, an overloaded/stuck server) hangs this call forever with no way to
       // detect it: checkHeartbeat()'s 60s checkRequestTimeouts() is the only timeout mechanism
@@ -487,7 +506,8 @@ export default class SyncPlugin extends Plugin {
       // knows not to send an idle ping before init succeeds (see wsTransport.ts's `authenticated`
       // flag) -- a real bug found 2026-08-15 investigating a "Test connection does nothing" report;
       // see llm-wiki/11-*.md.
-      this.wsHeartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
+      heartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
+      this.wsHeartbeatTimer = heartbeatTimer;
       await ws.connect(this.buildWsUrl(), {
         token,
         vaultId: this.app.vault.getName(),
@@ -913,7 +933,7 @@ export default class SyncPlugin extends Plugin {
   // syncNow()/testConnection() already use, per #11_websocket_동기화_프로토콜_설계.md.
   private async runLiveUpdateLoop(): Promise<void> {
     const INITIAL_BACKOFF_MS = 1000;
-    const MAX_BACKOFF_MS = 60000;
+    const MAX_BACKOFF_MS = 30000;
     let backoffMs = INITIAL_BACKOFF_MS;
 
     while (this.hasStoredToken && !this.unloading) {
@@ -921,6 +941,9 @@ export default class SyncPlugin extends Plugin {
         this.setLiveConnectionState("connecting");
         await this.getTransport();
         backoffMs = INITIAL_BACKOFF_MS;
+        // Local edits made while offline (and remote changes missed while the socket was down)
+        // would otherwise wait for the first safety-net tick, 30s from now.
+        void this.syncNow(true);
 
         await this.waitForCloseOrSafetyNet();
       } catch (e: unknown) {
@@ -941,10 +964,25 @@ export default class SyncPlugin extends Plugin {
           ? `no access to ${this.settings.sharedVaultOwner}'s shared vault -- check the invite or your account's email`
           : errorMessage(e);
         this.logDebug(`Live update connection error, retrying in ${Math.round(delayMs)}ms: ${detail}`);
-        await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        await this.sleepUnlessOnline(delayMs);
         backoffMs = nextBackoffMs(backoffMs, MAX_BACKOFF_MS);
       }
     }
+  }
+
+  // Backoff sleep that ends early when the OS reports the network is back ("online") -- without
+  // this a user who was offline for a while sat out up to a full (jittered) backoff after the
+  // network had already recovered, which reads as "sync doesn't work after reconnecting".
+  private sleepUnlessOnline(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => {
+        window.clearTimeout(timer);
+        window.removeEventListener("online", done);
+        resolve();
+      };
+      const timer = window.setTimeout(done, ms);
+      window.addEventListener("online", done);
+    });
   }
 
   // Waits until the current live connection drops, but doesn't just sleep -- every

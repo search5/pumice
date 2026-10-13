@@ -637,3 +637,62 @@ describe("WsSyncTransport connection close", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+// Network-drop recovery: a half-open socket never fires onclose on its own (the closing handshake
+// has no peer to answer it), so close() must tear down locally instead of waiting for the event.
+describe("WsSyncTransport half-open connection recovery", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("close() rejects pending requests and fires onClose even if the socket never fires onclose", async () => {
+    const { transport, ws } = await connectedTransport();
+    ws.close = () => {}; // half-open: close() starts a handshake nobody answers
+    const onClose = vi.fn();
+    transport.onClose(onClose);
+    const p = transport.request("delta_req", {});
+
+    transport.close();
+
+    await expect(p).rejects.toBeInstanceOf(Error);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("fires onClose only once when the late native onclose arrives after a forced close()", async () => {
+    const { transport, ws } = await connectedTransport();
+    const onClose = vi.fn();
+    transport.onClose(onClose);
+
+    transport.close();
+    ws.simulateClose();
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects connect() when the socket stays stuck in CONNECTING past the connect timeout", async () => {
+    const { transport } = makeTransport();
+    const connecting = transport.connect("ws://x", {} as any);
+    const settled = expect(connecting).rejects.toBeInstanceOf(Error);
+
+    vi.advanceTimersByTime(25_000);
+    transport.checkHeartbeat();
+
+    await settled;
+  });
+
+  it("closes after 45s without any frame from the server", async () => {
+    const { transport, ws } = await connectedTransport();
+    const onClose = vi.fn();
+    transport.onClose(onClose);
+
+    vi.advanceTimersByTime(50_000);
+    transport.checkHeartbeat();
+
+    expect(onClose).toHaveBeenCalled();
+    void ws;
+  });
+});

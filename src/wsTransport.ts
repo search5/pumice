@@ -122,7 +122,14 @@ interface QueuedRequest {
 // this file's own idle thresholds below assume, without duplicating the literal value.
 export const HEARTBEAT_CHECK_INTERVAL_MS = 20_000;
 const PING_AFTER_IDLE_MS = 10_000;
-const DISCONNECT_AFTER_IDLE_MS = 120_000;
+// Lowered from core's 120s: a ping goes out after 10s idle (checked every 20s), so 45s without
+// ANY frame back means at least two pings went unanswered -- on a flaky network (laptop sleep,
+// wifi roam, VPN flap) the socket is half-open and 120s just meant two more minutes of dead sync.
+const DISCONNECT_AFTER_IDLE_MS = 45_000;
+// A socket stuck in CONNECTING (SYN blackholed while offline) never produces onerror/onclose
+// until the OS gives up, which can take minutes -- and `pending` isn't set before onopen, so
+// REQUEST_TIMEOUT_MS can't catch it either.
+const CONNECT_TIMEOUT_MS = 20_000;
 // Mirrors Obsidian core's own Sync client, which wraps every request() in a 60s timeout and
 // disconnects the whole connection on expiry rather than just failing that one request (there's
 // no way to know the request is simply lost vs. the connection itself being half-dead). Checked
@@ -149,6 +156,11 @@ export class WsSyncTransport {
   private authenticated = false;
 
   private lastMessageTs = 0;
+  // Set while connect() hasn't settled (no init_ok yet) so a close/timeout before onopen still
+  // rejects connect()'s promise instead of leaving getTransport() hanging forever.
+  private connectReject: ((err: Error) => void) | null = null;
+  private connectStartedAt = 0;
+  private closed = false;
   private onPush?: (file: PushedFileChangeMeta) => void;
   private onReadyCb?: (payload: ReadyPayload) => void;
   private onCloseCb?: () => void;
@@ -178,6 +190,10 @@ export class WsSyncTransport {
     return new Promise((resolve, reject) => {
       const ws = this.wsFactory(url);
       this.ws = ws;
+      this.closed = false;
+      this.connectStartedAt = Date.now();
+      this.lastMessageTs = this.connectStartedAt;
+      this.connectReject = reject;
       // Browsers and Node's WebSocket both default binaryType to "blob" -- binary frames would
       // arrive as a Blob instead of an ArrayBuffer, which handleBinaryFrame below can't use
       // synchronously (Blob reads are async). Obsidian core's own Sync plugin sets this same
@@ -191,6 +207,7 @@ export class WsSyncTransport {
           resolve: (payload) => {
             this.releaseSlot();
             this.authenticated = true;
+            this.connectReject = null;
             resolve(payload as InitOkPayload);
           },
           reject: (e) => {
@@ -207,8 +224,18 @@ export class WsSyncTransport {
     });
   }
 
+  // Tears down locally *immediately* instead of waiting for the socket's own onclose: on a
+  // half-open connection (network dropped without a FIN/RST) ws.close() only starts a closing
+  // handshake the peer will never answer, so onclose can take minutes -- during which the dead
+  // transport stays cached, every sync reuses it and times out, and no reconnect starts.
   close(): void {
-    this.ws?.close();
+    const ws = this.ws;
+    try {
+      ws?.close();
+    } catch {
+      // already closing/closed -- the forced teardown below is what matters
+    }
+    this.handleClose();
   }
 
   // ── unary request/response: delta_req, history_req, restore_req ──────────────────────────
@@ -405,8 +432,20 @@ export class WsSyncTransport {
   }
 
   private handleClose(): void {
+    // close() and the socket's own (possibly much later) onclose both land here; only the first
+    // one may run, or onCloseCb would fire twice and a stale event could clobber a newer connection.
+    if (this.closed) return;
+    this.closed = true;
     this.authenticated = false;
     const err = new Error("WebSocket connection closed");
+    const rejectConnect = this.connectReject;
+    this.connectReject = null;
+    rejectConnect?.(err);
+    if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onerror = null;
+      this.ws.onmessage = null;
+    }
     // Snapshot and clear both before rejecting anything: `pending.reject` is wrapped with
     // releaseSlot() (see request()/requestStream()/pushFile() above), which would otherwise
     // shift the next queued request and actually send() it on this now-dead socket. Clearing
@@ -433,14 +472,21 @@ export class WsSyncTransport {
   // calling checkHeartbeat() directly instead of needing a DOM/jsdom environment. ─────────────
 
   checkHeartbeat(): void {
+    if (this.closed) return;
+    if (!this.authenticated && !this.pending && Date.now() - this.connectStartedAt > CONNECT_TIMEOUT_MS) {
+      this.close(); // still CONNECTING (no onopen yet)
+      return;
+    }
+    // Request timeout first, so an overdue request is rejected with the more specific "timed
+    // out" error rather than the generic "closed" the idle check below would produce.
+    this.checkRequestTimeouts();
+    if (this.closed) return;
     const idleMs = Date.now() - this.lastMessageTs;
     if (idleMs > DISCONNECT_AFTER_IDLE_MS) {
       this.close();
-      return;
     } else if (this.authenticated && idleMs > PING_AFTER_IDLE_MS) {
       this.sendJson({ op: "ping", payload: {} });
     }
-    this.checkRequestTimeouts();
   }
 
   // A pinging connection can still have an individual request whose response was silently lost
