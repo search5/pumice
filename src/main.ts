@@ -1,4 +1,4 @@
-import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, TFile, TFolder, setIcon, setTooltip } from "obsidian";
+import { CapacitorAdapter, DataAdapter, FileSystemAdapter, Plugin, Notice, FileView, TFile, TFolder, setIcon, setTooltip } from "obsidian";
 import { SyncSettingTab } from "./settingsTab";
 import { getDefaultSettings, type SyncPluginSettings } from "./settings";
 import { loadToken, hasToken, saveToken, loadE2eePassword, saveE2eePassword } from "./tokenStore";
@@ -120,6 +120,10 @@ export default class SyncPlugin extends Plugin {
   // false, so a manual click never gets silently swallowed just because an automatic sync
   // happened to already be queued in front of it.
   private syncQueuedSilent: boolean | null = null;
+  // Pushed single-file changes that arrived while a sync/another push was being applied, keyed
+  // by path (a newer push for the same path replaces the older one). Applied one at a time by
+  // drainPendingPushes() once the current work finishes.
+  private pendingPushes = new Map<string, PushedFileChangeMeta>();
   // Set once in onunload() so an in-flight runLiveUpdateLoop() notices (between reads/retries)
   // and stops re-looping, instead of holding the plugin process open forever.
   private unloading = false;
@@ -303,6 +307,7 @@ export default class SyncPlugin extends Plugin {
         // finished reconciling and queuing a needless follow-up sync.
         if (this.selfWritePaths.has(file.path)) {
           this.logDebug(`Ignoring self-triggered "delete" event for ${file.path} (sync is applying this itself)`);
+          this.closeLeavesShowing(file.path);
           return;
         }
         this.deletedFiles[file.path] = Date.now();
@@ -317,16 +322,7 @@ export default class SyncPlugin extends Plugin {
           this.logDebug(`Ignoring self-triggered "rename" event for ${oldPath} -> ${file.path} (sync is applying this itself)`);
           return;
         }
-        // Skip tombstone creation when an Obsidian auto-created note (Untitled/무제) gets renamed
-        // right away, so we don't spuriously mark it as deleted.
-        const baseName = pathUtil.basename(oldPath, ".md");
-        const isUntitled = /^(Untitled|무제)(\s+\d+)?$/i.test(baseName);
-        if (!isUntitled) {
-          this.deletedFiles[oldPath] = Date.now();
-        }
-        delete this.deletedFiles[file.path];
-        void this.savePluginData();
-        this.triggerDebouncedSync();
+        void this.handleLocalRename(file.path, oldPath);
       })
     );
 
@@ -777,6 +773,8 @@ export default class SyncPlugin extends Plugin {
         this.syncQueuedSilent = null;
         this.logDebug("Running the sync that was queued while the previous one was in progress");
         void this.syncNow(queuedSilent);
+      } else {
+        this.drainPendingPushes();
       }
     }
   }
@@ -784,23 +782,28 @@ export default class SyncPlugin extends Plugin {
   // 2026-08 push-metadata fidelity follow-up (see #11_websocket_동기화_프로토콜_설계.md and
   // llm-wiki/03-*.md): applies exactly the one file a `push` notification named, instead of
   // running a full syncNow()/Delta for every remote change no matter how much actually changed
-  // (matching real Obsidian Sync's per-file push). Shares syncNow()'s isSyncing/
-  // syncQueuedSilent mutex -- if a full sync is already running, this is skipped rather
-  // than risking two independent SyncClient instances writing the same path at once (writeSelfPath's
-  // selfWritePaths set is shared plugin-wide); the in-flight (or queued-right-after) full sync's
-  // own Delta will pick this exact file up anyway, since the server just told every connected
-  // device it changed.
+  // (matching real Obsidian Sync's per-file push). Shares syncNow()'s isSyncing mutex -- while a
+  // full sync or another push is being applied, the push is queued in pendingPushes (not
+  // dropped, not turned into a full sync) and applied one file at a time afterwards, so two
+  // SyncClient instances never write the same path at once (writeSelfPath's selfWritePaths set
+  // is shared plugin-wide).
   private async applyPushedChange(file: PushedFileChangeMeta): Promise<void> {
     if (this.isSyncing) {
-      this.logDebug(`Sync already in progress -- skipping direct apply of pushed change for ${file.path} (the in-flight/queued sync will pick it up)`);
+      // Never drop it: a rename arrives as two near-simultaneous pushes (new path, then the old
+      // path's deletion), and the second lands while the first is still being applied. Queue it
+      // (latest push per path wins) and apply it, still one file at a time, as soon as the
+      // current work finishes -- see drainPendingPushes().
+      this.logDebug(`Sync already in progress -- queuing pushed change for ${file.path}${file.isDeleted ? " (deleted)" : ""}`);
+      this.pendingPushes.set(file.path, file);
       return;
     }
-    const token = await this.getToken();
-    if (!token) return;
-
+    // Marked busy before the first await: getToken() yields, and a second push arriving in that
+    // window would otherwise pass the isSyncing check above and run concurrently with this one.
     this.setSyncActivity(true);
     let failed = false;
     try {
+      const token = await this.getToken();
+      if (!token) return;
       const pluginDir = getAdapterFullPath(this.app.vault.adapter, this.manifest.dir);
       const transport = await this.getTransport();
       const client = new SyncClient(
@@ -842,6 +845,8 @@ export default class SyncPlugin extends Plugin {
         this.syncQueuedSilent = null;
         this.logDebug("Running the sync that was queued while a pushed change was being applied");
         void this.syncNow(queuedSilent);
+      } else {
+        this.drainPendingPushes();
       }
     }
   }
@@ -1055,6 +1060,44 @@ export default class SyncPlugin extends Plugin {
     }
   }
 
+  private drainPendingPushes(): void {
+    if (this.isSyncing) return;
+    const next = this.pendingPushes.entries().next();
+    if (next.done) return;
+    const [path, file] = next.value;
+    this.pendingPushes.delete(path);
+    void this.applyPushedChange(file);
+  }
+
+  // A file the server just deleted (rename's old path, or a delete on another device) may be open
+  // in a tab. Left alone, Obsidian keeps showing the stale note -- editing it would even recreate
+  // the file and sync it right back -- so close any tab showing exactly that path.
+  private closeLeavesShowing(path: string): void {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof FileView && leaf.view.file?.path === path) leaf.detach();
+    });
+  }
+
+  // A rename is a delete of the old path plus a create of the new one as far as the server is
+  // concerned. The old path only needs a tombstone if the server could know about it: an
+  // auto-created "Untitled/무제" note renamed before its first sync was never uploaded, so
+  // tombstoning it is pointless -- but once it HAS synced (the usual case: create, wait for the
+  // 3s debounce, then type a title), skipping the tombstone left the old "무제.md" on the server
+  // forever, to be re-downloaded or lingering on other devices while only the new name synced.
+  private async handleLocalRename(newPath: string, oldPath: string): Promise<void> {
+    const baseName = pathUtil.basename(oldPath, ".md");
+    const isUntitled = /^(Untitled|무제)(\s+\d+)?$/i.test(baseName);
+    const everSynced = (await this.lastSyncedHashStore.get(oldPath)) !== null;
+    // TEMP-DIAG(rename): remove once rename sync is confirmed working.
+    this.logDebug(`[rename-diag] rename event ${oldPath} -> ${newPath} (untitled=${isUntitled}, everSynced=${everSynced}, tombstone=${!isUntitled || everSynced}, isSyncing=${this.isSyncing})`);
+    if (!isUntitled || everSynced) {
+      this.deletedFiles[oldPath] = Date.now();
+    }
+    delete this.deletedFiles[newPath];
+    void this.savePluginData();
+    this.triggerDebouncedSync();
+  }
+
   triggerDebouncedSync(): void {
     // Guards on a token being configured at all, not a removed "autoSync" opt-in flag -- prompt
     // upload of local edits is always on now (matching real Obsidian core, see
@@ -1067,6 +1110,7 @@ export default class SyncPlugin extends Plugin {
     }
 
     this.debounceTimer = window.setTimeout(() => {
+      this.logDebug("[rename-diag] debounced sync firing"); // TEMP-DIAG(rename)
       void this.syncNow(true);
     }, 3000); // run after a 3-second debounce delay
   }
