@@ -487,6 +487,30 @@ export class SyncClient {
     }
   }
 
+  /**
+   * Paths an option turns off: bookmarks (syncBookmarks), everything under plugins/ plus
+   * community-plugins.json (syncPlugins) and each plugin's data.json (syncPluginData). The local
+   * scan already leaves them out, but the server still lists them -- other devices upload them --
+   * so the server's download/deletion lists and live push notifications must be filtered too.
+   * Otherwise a device with plugin sync off keeps pulling plugin files over its own installed ones
+   * (a conflict every sync) and could even have an installed plugin deleted by a remote tombstone.
+   */
+  /** Anything under <configDir>/plugins/ -- plugin code, manifest, styles and each plugin's data. */
+  private isPluginFolderFile(filePath: string): boolean {
+    return filePath.replace(/\\/g, "/").startsWith(`${this.vault.configDir}/plugins/`);
+  }
+
+  private isDisabledByOption(filePath: string): boolean {
+    const p = filePath.replace(/\\/g, "/");
+    const configDir = this.vault.configDir;
+    if (p === `${configDir}/bookmarks.json`) return !this.settings.syncBookmarks;
+    const isPluginFile = p.startsWith(`${configDir}/plugins/`);
+    if (p === `${configDir}/community-plugins.json`) return !this.settings.syncPlugins;
+    if (!isPluginFile) return false;
+    if (!this.settings.syncPlugins) return true;
+    return !this.settings.syncPluginData && p.endsWith("/data.json");
+  }
+
   private isIgnored(filePath: string): boolean {
     const ignoreLines = this.settings.ignorePatterns
       .split("\n")
@@ -753,7 +777,11 @@ export class SyncClient {
         return true;
       }
 
-      if (exists && !serverMerged) {
+      // Plugin folders are never merged line by line (that corrupts main.js with conflict markers
+      // and pops a "merge conflict" notice on every sync): Delta already decided the server's copy
+      // is the one to keep, so it is adopted as-is, like the server-merged config files above.
+      const serverAuthoritative = this.isPluginFolderFile(currentPath);
+      if (exists && !serverMerged && !serverAuthoritative) {
         // Text files always attempt a 3-way merge first, regardless of settings.conflictResolution
         // -- tryAutoMergeConflict() itself gates on isTextFilePath() (see its own comment), so
         // this call is unconditional here (see 16_conflict_resolution_텍스트_상시병합.md). It
@@ -905,6 +933,7 @@ export class SyncClient {
   // caller, main.ts, is responsible for not overlapping this with a full sync() call on shared
   // mutable state like deletedFiles/hashCache -- see main.ts's isSyncing guard).
   public async applyPushedFileChange(file: RemoteFileMetaWire): Promise<void> {
+    if (this.isDisabledByOption(file.path)) return;
     if (file.is_deleted) {
       await this.applyServerDeletion(file.path);
       return;
@@ -1138,8 +1167,8 @@ export class SyncClient {
     let downloadCount = 0;
     let deleteCount = 0;
 
-    let needUploadList = deltaRes.needUpload;
-    let needDownloadList = deltaRes.needDownload;
+    let needUploadList = deltaRes.needUpload.filter((p) => !this.isDisabledByOption(p));
+    let needDownloadList = deltaRes.needDownload.filter((f) => !this.isDisabledByOption(f.path));
 
     // A server-merged file with unsynced local edits must be uploaded (the server merges it with
     // its newer version) before it is downloaded -- downloading first would discard the edits.

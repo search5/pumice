@@ -20,6 +20,7 @@ import { errorMessage } from "./errorMessage";
 import { applyJitter, LIVE_SYNC_SAFETY_NET_INTERVAL_MS, nextBackoffMs } from "./liveUpdates";
 import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
 import { ConnectionSlots, connectWithDeadline } from "./connectionGuard";
+import { ManualSyncGate } from "./manualSyncGate";
 
 // Overall cap on a single connect attempt (WS handshake + init round trip), enforced independently
 // of the heartbeat timer so a hung attempt can never stall runLiveUpdateLoop().
@@ -113,6 +114,9 @@ export default class SyncPlugin extends Plugin {
   // independent Delta and stepping on each other -- a request to sync while one is already
   // running is queued instead, and runs once the current one finishes.
   private isSyncing = false;
+  // True while the user's own "Sync now" runs -- automatic sync (ws pushes, debounced local edits,
+  // the 30s safety net, reconnect catch-up) is ignored meanwhile. See manualSyncGate.ts.
+  private manualSyncGate = new ManualSyncGate();
   // Mirrors real Obsidian core Sync's own persistent error indicator (this.error/fileRetry in
   // its SyncStore) -- true once a sync attempt either threw or finished with files still failing
   // after in-sync retries, cleared again only by a subsequent sync that completes clean. Read by
@@ -708,6 +712,12 @@ export default class SyncPlugin extends Plugin {
     // each one would compute its own independent Delta and step on the other's writes. Instead
     // this request is queued and runs once, right after the current one finishes, so concurrent
     // client/server changes still converge without the user needing to notice and retry manually.
+    // Automatic triggers are dropped (not queued) while a manual sync runs: it computes a full
+    // Delta of its own, so they would only repeat its work or race its writes.
+    if (silent && this.manualSyncGate.shouldIgnoreAutomatic()) {
+      this.logDebug("Manual sync in progress -- skipping this automatic sync");
+      return;
+    }
     if (this.isSyncing) {
       this.logDebug("Sync already in progress -- queuing this request to run once it finishes");
       // Prefer non-silent if anything queued so far wanted Notices -- see syncQueuedSilent's own comment.
@@ -715,6 +725,11 @@ export default class SyncPlugin extends Plugin {
       return;
     }
     this.setSyncActivity(true);
+    if (!silent) {
+      this.manualSyncGate.begin();
+      // Pushes queued before this click are covered by the full Delta below.
+      this.pendingPushes.clear();
+    }
     // Whether this attempt should count toward lastSyncFailed once activity turns back off --
     // defaults to false so an early return before a real attempt (e.g. no token configured yet)
     // doesn't count as a failure; set for real inside the actual sync attempt below.
@@ -795,6 +810,7 @@ export default class SyncPlugin extends Plugin {
         if (!silent) new Notice(t("settings.msg-sync-failed", "Sync failed: {{error}}", { error: errorMessage(e) }));
       }
     } finally {
+      if (!silent) this.manualSyncGate.end();
       this.setSyncActivity(false, failed);
       if (this.syncQueuedSilent !== null) {
         const queuedSilent = this.syncQueuedSilent;
@@ -816,6 +832,10 @@ export default class SyncPlugin extends Plugin {
   // SyncClient instances never write the same path at once (writeSelfPath's selfWritePaths set
   // is shared plugin-wide).
   private async applyPushedChange(file: PushedFileChangeMeta): Promise<void> {
+    if (this.manualSyncGate.shouldIgnoreAutomatic()) {
+      this.logDebug(`Manual sync in progress -- ignoring pushed change for ${file.path}`);
+      return;
+    }
     if (this.isSyncing) {
       // Never drop it: a rename arrives as two near-simultaneous pushes (new path, then the old
       // path's deletion), and the second lands while the first is still being applied. Queue it

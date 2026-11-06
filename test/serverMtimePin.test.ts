@@ -205,6 +205,9 @@ describe("SyncClient download -- server-merged files under E2EE", () => {
     (client as any).settings.enableE2EE = true;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (client as any).settings.e2eePassword = "pw";
+    // community-plugins.json is only synced (and applied from a push) while plugin sync is on.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (client as any).settings.syncPlugins = true;
     await client.applyPushedFileChange({ path, modified_at_ms: 123, size_bytes: wire.byteLength, content_hash: wireHash, is_deleted: false });
     return { vault, set, client };
   }
