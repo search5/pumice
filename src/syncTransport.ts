@@ -38,6 +38,7 @@ export interface PreparedUploadFile {
   data: ArrayBuffer;
   contentHash: string;
   mtimeMs: number;
+  baseHash?: string;
 }
 
 export interface UploadAckResult {

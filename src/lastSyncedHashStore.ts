@@ -38,10 +38,25 @@ export class LastSyncedHashStore {
     });
   }
 
-  set(path: string, hash: string): void {
+  // Hash plus (when known) the mtime the server holds for that content -- used by
+  // serverMtimePin.ts so a file whose content matches the server also reports the server's mtime.
+  getEntry(path: string): Promise<{ hash: string; mtimeMs?: number } | null> {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve(null);
+      try {
+        const req = this.db.transaction("hashes", "readonly").objectStore("hashes").get(path);
+        req.onsuccess = () => resolve((req.result as { hash: string; mtimeMs?: number } | undefined) ?? null);
+        req.onerror = () => resolve(null);
+      } catch {
+        resolve(null);
+      }
+    });
+  }
+
+  set(path: string, hash: string, mtimeMs?: number): void {
     if (!this.db) return;
     try {
-      this.db.transaction("hashes", "readwrite").objectStore("hashes").put({ hash, syncedAtMs: Date.now() }, path);
+      this.db.transaction("hashes", "readwrite").objectStore("hashes").put({ hash, syncedAtMs: Date.now(), mtimeMs }, path);
     } catch {
       /* best-effort -- a failed write just means the next conflict on this path skips merging */
     }

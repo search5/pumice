@@ -74,6 +74,7 @@ export class WsSyncTransportAdapter implements SyncTransport {
         modifiedAtMs: f.mtimeMs,
         data: new Uint8Array(f.data),
         contentHash: f.contentHash,
+        baseHash: f.baseHash,
       });
       onAck({ path: f.path, ok: result.ok, error: result.error });
     }

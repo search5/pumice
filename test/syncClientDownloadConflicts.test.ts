@@ -351,7 +351,9 @@ describe("SyncClient downloadFileBatch -- unconditional text merge sub-cases", (
 
     // Went through the *ordinary* write path (server content taken as-is), which is what marks
     // the path as confirmed-in-sync -- a true merge result must NOT do this (see the next test).
-    expect(lastSyncedHashStore.set).toHaveBeenCalledWith(path, remoteHash);
+    // The server's mtime (100) is recorded too: serverMtimePin.ts reports it back for
+    // bookmarks.json / community-plugins.json while the content still matches the server.
+    expect(lastSyncedHashStore.set).toHaveBeenCalledWith(path, remoteHash, 100);
   });
 
   it("a clean merge that produces a genuinely new result writes the merged content, not the raw remote content", async () => {

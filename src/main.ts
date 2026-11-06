@@ -19,6 +19,11 @@ import { t } from "./i18n";
 import { errorMessage } from "./errorMessage";
 import { applyJitter, LIVE_SYNC_SAFETY_NET_INTERVAL_MS, nextBackoffMs } from "./liveUpdates";
 import { describeLiveStatus, type LiveConnectionState } from "./liveStatus";
+import { ConnectionSlots, connectWithDeadline } from "./connectionGuard";
+
+// Overall cap on a single connect attempt (WS handshake + init round trip), enforced independently
+// of the heartbeat timer so a hung attempt can never stall runLiveUpdateLoop().
+const CONNECT_DEADLINE_MS = 30_000;
 
 // Plugin.loadData() returns Promise<any> -- narrowing it to this shape right at the read site
 // (matching what savePluginData() below actually writes) keeps the `any` from flowing into
@@ -143,7 +148,16 @@ export default class SyncPlugin extends Plugin {
   // per sync, matching #11_websocket_동기화_프로토콜_설계.md's whole premise. Null whenever no
   // connection currently exists (never connected yet, or it dropped -- see wsTransport's
   // onClose); getTransport() connects on demand and caches the result here.
-  private wsTransport: WsSyncTransport | null = null;
+  // `wsSlots.attempt` is the connection still being established (not yet usable); `established`
+  // is the one getTransport() hands out. Tracked separately so dropping "the connection" also
+  // reaches an in-flight attempt -- see connectionGuard.ts.
+  private wsSlots = new ConnectionSlots<WsSyncTransport>();
+  private get wsTransport(): WsSyncTransport | null {
+    return this.wsSlots.established;
+  }
+  private set wsTransport(ws: WsSyncTransport | null) {
+    this.wsSlots.established = ws;
+  }
   private wsHeartbeatTimer: number | null = null;
   // Coalesces concurrent getTransport() callers (e.g. the live-update loop reconnecting while a
   // manual sync is also trying to connect) onto the same in-flight connect() instead of racing
@@ -361,11 +375,11 @@ export default class SyncPlugin extends Plugin {
     // suspect, so replace it -- the live loop reconnects and syncs immediately.
     this.registerDomEvent(window, "offline", () => {
       this.logDebug("Network went offline -- dropping the live connection");
-      this.wsTransport?.close();
+      this.wsSlots.closeAll();
     });
     this.registerDomEvent(window, "online", () => {
       this.logDebug("Network is back online -- re-establishing the live connection");
-      this.wsTransport?.close();
+      this.wsSlots.closeAll();
     });
 
     // Folder context menu — toggles publish "included folder" status. Core Publish itself has no
@@ -463,6 +477,7 @@ export default class SyncPlugin extends Plugin {
 
     this.wsConnecting = (async () => {
       const ws = new WsSyncTransport((url) => new WebSocket(url));
+      this.wsSlots.attempt = ws;
       // Registered *before* connect() resolves, not after -- a catch-up push burst (PR2 of
       // #14_옵시디언싱크_정렬_구현계획.md) can arrive on the wire immediately once init_ok is
       // sent, and registering these callbacks only once `await ws.connect(...)` returns left a
@@ -504,15 +519,27 @@ export default class SyncPlugin extends Plugin {
       // see llm-wiki/11-*.md.
       heartbeatTimer = window.setInterval(() => ws.checkHeartbeat(), HEARTBEAT_CHECK_INTERVAL_MS);
       this.wsHeartbeatTimer = heartbeatTimer;
-      await ws.connect(this.buildWsUrl(), {
-        token,
-        vaultId: this.app.vault.getName(),
-        vaultOwner: this.settings.sharedVaultOwner || "",
-        deviceName: this.settings.deviceName || "",
-        userName: this.settings.userName || "",
-        clientVersion: this.manifest.version,
-        lastKnownChangeId: this.lastKnownChangeId,
-      });
+      try {
+        await connectWithDeadline(
+          ws.connect(this.buildWsUrl(), {
+            token,
+            vaultId: this.app.vault.getName(),
+            vaultOwner: this.settings.sharedVaultOwner || "",
+            deviceName: this.settings.deviceName || "",
+            userName: this.settings.userName || "",
+            clientVersion: this.manifest.version,
+            lastKnownChangeId: this.lastKnownChangeId,
+          }),
+          () => {
+            this.logDebug(`Connect attempt exceeded ${CONNECT_DEADLINE_MS}ms -- aborting it`);
+            ws.close();
+          },
+          CONNECT_DEADLINE_MS,
+          { set: (cb, ms) => window.setTimeout(cb, ms), clear: (h) => window.clearTimeout(h as number) }
+        );
+      } finally {
+        if (this.wsSlots.attempt === ws) this.wsSlots.attempt = null;
+      }
       this.wsTransport = ws;
       this.setIdleStatus();
       return ws;
@@ -531,8 +558,9 @@ export default class SyncPlugin extends Plugin {
   // own -- runLiveUpdateLoop()'s own hasStoredToken check would eventually notice too, but only
   // at its next reconnect/safety-net cycle, not right away.
   disconnectTransport(): void {
-    this.wsTransport?.close();
-    this.wsTransport = null;
+    // Closes an in-flight attempt too (its onClose clears its own heartbeat timer) -- clearing the
+    // timer below without closing the attempt used to leave a hung connect() with no timeout.
+    this.wsSlots.closeAll();
     if (this.wsHeartbeatTimer !== null) {
       window.clearInterval(this.wsHeartbeatTimer);
       this.wsHeartbeatTimer = null;
@@ -864,10 +892,19 @@ export default class SyncPlugin extends Plugin {
       return;
     }
     this.liveUpdatesLoopRunning = true;
-    void this.runLiveUpdateLoop().finally(() => {
-      this.liveUpdatesLoopRunning = false;
-      this.setLiveConnectionState("disabled");
-    });
+    void this.runLiveUpdateLoop()
+      .catch((e: unknown) => {
+        // Not expected (the loop handles connect errors itself), but if it ever dies this way the
+        // restart below keeps live sync from staying dead until Obsidian is reloaded.
+        this.logDebug(`Live update loop crashed: ${errorMessage(e)}`);
+      })
+      .finally(() => {
+        this.liveUpdatesLoopRunning = false;
+        this.setLiveConnectionState("disabled");
+        if (this.hasStoredToken && !this.unloading) {
+          window.setTimeout(() => this.startLiveUpdatesIfNeeded(), 5000);
+        }
+      });
   }
 
   // Renders liveConnectionState to the status bar (see the field's own comment for why the

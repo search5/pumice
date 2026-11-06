@@ -4,6 +4,7 @@ import { ContentHashCache } from "./contentHashCache";
 import type { LastSyncedHashStore } from "./lastSyncedHashStore";
 import { isTextFilePath } from "./textFileTypes";
 import { isMergeableConfigJson, mergeConfigJson } from "./jsonConfigMerge";
+import { isServerMtimePinnedPath, resolveReportedMtime } from "./serverMtimePin";
 import { mapWithConcurrency } from "./concurrency";
 import type { SyncPluginSettings } from "./settings";
 import { t } from "./i18n";
@@ -337,8 +338,8 @@ export class SyncClient {
     return sha256(new TextEncoder().encode(password).buffer);
   }
 
-  private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer): Promise<{ size: number; hash: string; buffer: ArrayBuffer }> {
-    if (this.settings.enableE2EE && this.settings.e2eePassword) {
+  private async getFileMetadataFromBuffer(arrayBuffer: ArrayBuffer, path?: string): Promise<{ size: number; hash: string; buffer: ArrayBuffer }> {
+    if (this.settings.enableE2EE && this.settings.e2eePassword && !(path && this.isServerMerged(path))) {
       const key = await this.getE2eeKey();
       const encrypted = await this.encryptData(arrayBuffer, key);
       const hash = await sha256(encrypted);
@@ -427,6 +428,65 @@ export class SyncClient {
     }
   }
 
+  // bookmarks.json / community-plugins.json are merged by the server (config_merge.py), never here.
+  // The server can only merge what it can read, so these two files are deliberately NOT end-to-end
+  // encrypted even when E2EE is on (they hold bookmarks and plugin ids, never note content).
+  private isServerMerged(path: string): boolean {
+    return isServerMtimePinnedPath(path, this.vault.configDir);
+  }
+
+  private e2eeEnabled(): boolean {
+    return !!(this.settings.enableE2EE && this.settings.e2eePassword);
+  }
+
+  // Decrypts E2EE data, except a server-merged config file that is already plaintext JSON (what is
+  // stored now). Copies stored encrypted before this exemption existed still decrypt normally.
+  private async decryptUnlessPlainConfig(path: string, data: ArrayBuffer): Promise<ArrayBuffer> {
+    if (!this.e2eeEnabled()) return data;
+    if (this.isServerMerged(path)) {
+      try {
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(data));
+        return data;
+      } catch {
+        // not plaintext JSON -- an old encrypted copy, decrypted below
+      }
+    }
+    return this.decryptData(data, await this.getE2eeKey());
+  }
+
+  // True when a server-merged file has local content the server has not seen yet (never synced,
+  // or its hash differs from the last one confirmed in sync).
+  private async hasUnsyncedLocalEdit(path: string): Promise<boolean> {
+    if (!(await existsByPath(this.vault, path))) return false;
+    const lastSynced = await this.lastSyncedHashStore?.get(path);
+    if (!lastSynced) return true;
+    return (await sha256(await readBinaryByPath(this.vault, path))) !== lastSynced;
+  }
+
+  // For bookmarks.json / community-plugins.json: when the local content is exactly what the server
+  // has, the local file's own mtime is set to the server's stored mtime (see serverMtimePin.ts),
+  // and that mtime is what gets reported. Returns the mtime to report.
+  private async reportedMtime(path: string, localHash: string, localMtime: number, data: ArrayBuffer): Promise<number> {
+    if (!isServerMtimePinnedPath(path, this.vault.configDir)) return localMtime;
+    try {
+      const entry = (await this.lastSyncedHashStore?.getEntry(path)) ?? null;
+      const mtime = resolveReportedMtime(entry, localHash, localMtime);
+      if (mtime === localMtime) return localMtime;
+      // Rewrites the identical bytes with the server's mtime. Skipped if the file changed since it
+      // was read (a concurrent edit must never be overwritten with this stale copy); a failed
+      // write still reports the server mtime -- the content is the server's either way.
+      const current = await this.vault.adapter.stat(path);
+      if (current && current.mtime === localMtime) {
+        await this.writeSelfPath(path, () => this.vault.adapter.writeBinary(path, data, { mtime }));
+      } else {
+        return localMtime;
+      }
+      return mtime;
+    } catch {
+      return localMtime;
+    }
+  }
+
   private isIgnored(filePath: string): boolean {
     const ignoreLines = this.settings.ignorePatterns
       .split("\n")
@@ -478,7 +538,7 @@ export class SyncClient {
   private async prepareUploadFile(
     uploadPath: string,
     scannedWireBuffers: Map<string, { buffer: ArrayBuffer; hash: string; mtime: number }>
-  ): Promise<{ path: string; data: ArrayBuffer; contentHash: string; mtimeMs: number } | null> {
+  ): Promise<{ path: string; data: ArrayBuffer; contentHash: string; mtimeMs: number; baseHash?: string } | null> {
     try {
       const cached = scannedWireBuffers.get(uploadPath);
       let sendBuffer: ArrayBuffer;
@@ -500,7 +560,7 @@ export class SyncClient {
         sendBuffer = arrayBuffer;
         contentHash = "";
 
-        if (this.settings.enableE2EE && this.settings.e2eePassword) {
+        if (this.settings.enableE2EE && this.settings.e2eePassword && !this.isServerMerged(uploadPath)) {
           const key = await this.getE2eeKey();
           sendBuffer = await this.encryptData(arrayBuffer, key);
           contentHash = await sha256(sendBuffer);
@@ -512,7 +572,12 @@ export class SyncClient {
         mtime = stat ? stat.mtime : Date.now();
       }
 
-      return { path: uploadPath, data: sendBuffer, contentHash, mtimeMs: mtime };
+      const upload: { path: string; data: ArrayBuffer; contentHash: string; mtimeMs: number; baseHash?: string } = {
+        path: uploadPath, data: sendBuffer, contentHash, mtimeMs: mtime,
+      };
+      // Tells the server which version this device built on, so it merges instead of overwriting.
+      if (this.isServerMerged(uploadPath)) upload.baseHash = (await this.lastSyncedHashStore?.get(uploadPath)) || "0";
+      return upload;
     } catch (err) {
       console.error(`Error preparing ${uploadPath} for upload:`, err);
       return null;
@@ -673,15 +738,22 @@ export class SyncClient {
       // check below) since the unconditional text merge attempt needs this plaintext as the
       // "remote" side of a 3-way merge, and client-wins needs it too, to back up the losing side.
       let plainHashForCache = calculatedHash;
-      if (this.settings.enableE2EE && this.settings.e2eePassword) {
-        const key = await this.getE2eeKey();
-        plainData = await this.decryptData(file.data, key);
+      if (this.e2eeEnabled()) {
+        plainData = await this.decryptUnlessPlainConfig(currentPath, file.data);
         plainHashForCache = await sha256(plainData);
       }
 
       let handledByMerge = false;
 
-      if (exists) {
+      // Server-merged files: never merged here. If this device has edits the server hasn't seen,
+      // keep them -- the next upload carries them (with baseHash) and the server merges; the merged
+      // result comes back through an ordinary download. Otherwise just adopt the server's version.
+      const serverMerged = this.isServerMerged(currentPath);
+      if (exists && serverMerged && (await this.hasUnsyncedLocalEdit(currentPath))) {
+        return true;
+      }
+
+      if (exists && !serverMerged) {
         // Text files always attempt a 3-way merge first, regardless of settings.conflictResolution
         // -- tryAutoMergeConflict() itself gates on isTextFilePath() (see its own comment), so
         // this call is unconditional here (see 16_conflict_resolution_텍스트_상시병합.md). It
@@ -787,7 +859,7 @@ export class SyncClient {
         // calculatedHash (the wire/ciphertext hash under E2EE, same as plain hash otherwise)
         // to match the hash space Delta/history use server-side -- NOT plainHashForCache,
         // which is deliberately the plaintext hash instead (see its own comment above).
-        this.lastSyncedHashStore?.set(currentPath, calculatedHash);
+        this.lastSyncedHashStore?.set(currentPath, serverMerged ? plainHashForCache : calculatedHash, currentMtime);
       }
 
       if (this.deletedFiles[currentPath]) {
@@ -970,11 +1042,11 @@ export class SyncClient {
           const stat = await this.vault.adapter.stat(bookmarkPath);
           if (stat) {
             const arrayBuffer = await this.vault.adapter.readBinary(bookmarkPath);
-            const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer);
+            const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer, bookmarkPath);
             maybeCacheWireBuffer(bookmarkPath, buffer, hash, stat.mtime);
             localFilesMeta.push({
               path: bookmarkPath,
-              modified_at_ms: stat.mtime,
+              modified_at_ms: await this.reportedMtime(bookmarkPath, hash, stat.mtime, arrayBuffer),
               size_bytes: size,
               content_hash: hash,
               is_deleted: false,
@@ -1021,11 +1093,11 @@ export class SyncClient {
           const stat = await this.vault.adapter.stat(path);
           if (!stat) return;
           const arrayBuffer = await this.vault.adapter.readBinary(path);
-          const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer);
+          const { size, hash, buffer } = await this.getFileMetadataFromBuffer(arrayBuffer, path);
           maybeCacheWireBuffer(path, buffer, hash, stat.mtime);
           localFilesMeta.push({
             path,
-            modified_at_ms: stat.mtime,
+            modified_at_ms: await this.reportedMtime(path, hash, stat.mtime, arrayBuffer),
             size_bytes: size,
             content_hash: hash,
             is_deleted: false,
@@ -1066,8 +1138,21 @@ export class SyncClient {
     let downloadCount = 0;
     let deleteCount = 0;
 
-    const needUploadList = deltaRes.needUpload;
-    const needDownloadList = deltaRes.needDownload;
+    let needUploadList = deltaRes.needUpload;
+    let needDownloadList = deltaRes.needDownload;
+
+    // A server-merged file with unsynced local edits must be uploaded (the server merges it with
+    // its newer version) before it is downloaded -- downloading first would discard the edits.
+    const editedServerMerged = new Set<string>();
+    for (const f of needDownloadList) {
+      if (!f.is_deleted && this.isServerMerged(f.path) && (await this.hasUnsyncedLocalEdit(f.path))) {
+        editedServerMerged.add(f.path);
+      }
+    }
+    if (editedServerMerged.size > 0) {
+      needDownloadList = needDownloadList.filter((f) => !editedServerMerged.has(f.path));
+      needUploadList = [...needUploadList, ...editedServerMerged];
+    }
 
     // 3-1. Reconcile locally-deleted files against the server response and clean up local state
     const sentDeletions = Object.keys(this.deletedFiles);
@@ -1095,6 +1180,7 @@ export class SyncClient {
     // a whole separate manual sync (a fresh Delta) to pick it back up).
     const sizeByPath = new Map(localFilesMeta.map((f) => [f.path, f.size_bytes]));
     const hashByPath = new Map(localFilesMeta.map((f) => [f.path, f.content_hash]));
+    const mtimeByPath = new Map(localFilesMeta.map((f) => [f.path, f.modified_at_ms]));
     const filesToDownload = needDownloadList.filter((f) => !f.is_deleted);
     const downloadSizeByPath = new Map(filesToDownload.map((f) => [f.path, f.size_bytes]));
 
@@ -1120,7 +1206,7 @@ export class SyncClient {
             // Records this path as confirmed in sync (the "base" a future 3-way merge diffs
             // against) -- server now has exactly the content whose hash this is.
             const uploadedHash = hashByPath.get(ackPath);
-            if (uploadedHash) this.lastSyncedHashStore?.set(ackPath, uploadedHash);
+            if (uploadedHash) this.lastSyncedHashStore?.set(ackPath, uploadedHash, mtimeByPath.get(ackPath));
           } else {
             console.error(`Upload failed for ${ackPath}: ${ack.error}`);
             failedThisAttempt.push(ackPath);
@@ -1288,11 +1374,7 @@ export class SyncClient {
     // History is stored server-side exactly as it was uploaded -- ciphertext when E2EE is on,
     // same as regular sync's UploadFiles/DownloadFiles. Every caller of this (version preview,
     // diff, copy) expects plaintext back, same as the regular download path already decrypts.
-    if (this.settings.enableE2EE && this.settings.e2eePassword) {
-      const key = await this.getE2eeKey();
-      return this.decryptData(data, key);
-    }
-    return data;
+    return this.decryptUnlessPlainConfig(filePath, data);
   }
 
   // Download a specific backup version's data, restore it to the original path, and also ask the
@@ -1317,10 +1399,7 @@ export class SyncClient {
     // Same as downloadHistoryVersion: the backup is stored as ciphertext when E2EE is on, and
     // has to be decrypted before it's written back into the vault -- otherwise "restore" replaces
     // the note's actual content with raw ciphertext.
-    if (this.settings.enableE2EE && this.settings.e2eePassword) {
-      const key = await this.getE2eeKey();
-      arrayBuffer = await this.decryptData(arrayBuffer, key);
-    }
+    arrayBuffer = await this.decryptUnlessPlainConfig(currentPath, arrayBuffer);
 
     // Write the restored data to the local filesystem
     await this.ensureFolderForPath(currentPath);

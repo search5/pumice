@@ -696,3 +696,24 @@ describe("WsSyncTransport half-open connection recovery", () => {
     void ws;
   });
 });
+
+describe("WsSyncTransport.pushFile baseHash", () => {
+  async function pushWith(baseHash?: string) {
+    const { transport, ws } = await connectedTransport();
+    const data = new Uint8Array([1, 2, 3]);
+    const p = transport.pushFile("vault1", { path: ".obsidian/community-plugins.json", totalBytes: 3, modifiedAtMs: 7, data, contentHash: "h", baseHash });
+    const sent = ws.jsonSent("push_req")[0];
+    ws.simulateJson({ op: "push_ack", payload: { ok: true, needData: false, error: "" } });
+    ws.simulateJson({ op: "stream_end", payload: {} });
+    await p;
+    return sent;
+  }
+
+  it("includes baseHash in push_req when given (server merges instead of overwriting)", async () => {
+    expect((await pushWith("abc")).payload.baseHash).toBe("abc");
+  });
+
+  it("omits baseHash otherwise, so ordinary files and older servers are unaffected", async () => {
+    expect("baseHash" in (await pushWith()).payload).toBe(false);
+  });
+});

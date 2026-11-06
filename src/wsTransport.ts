@@ -84,6 +84,10 @@ export interface UploadFileInput {
   modifiedAtMs: number;
   data: ArrayBufferView;
   contentHash: string;
+  // Only set for the server-merged config files (bookmarks.json / community-plugins.json): the
+  // content hash this device last synced ("0" = none), so the server can 3-way merge against
+  // whatever it holds now instead of overwriting it.
+  baseHash?: string;
 }
 
 // Minimal WebSocket surface this transport needs -- lets tests inject a fake socket instead of
@@ -329,6 +333,7 @@ export class WsSyncTransport {
           payload: {
             vaultId, path: file.path, contentHash: file.contentHash,
             sizeBytes: file.totalBytes, modifiedAtMs: file.modifiedAtMs,
+            ...(file.baseHash ? { baseHash: file.baseHash } : {}),
           },
         });
       };
